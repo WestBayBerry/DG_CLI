@@ -50,7 +50,7 @@
   "private": false,
   "dependencies": {
     "chalk": "4.1.2",
-    "ink": "5.2.1",
+    "ink": "7.0.6",
     "ink-spinner": "5.0.0",
     "node-forge": "1.4.0",
     "react": "18.3.1"
