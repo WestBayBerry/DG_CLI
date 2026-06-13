@@ -1,0 +1,56 @@
+name: Bug report
+description: Report a problem with the dg CLI
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: The exact command you ran and the output you saw.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: dg doctor output
+      description: Paste the full output of `dg doctor`.
+      render: shell
+    validations:
+      required: false
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - macOS
+        - Linux
+        - Windows
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: node
+    attributes:
+      label: Node version
+      options:
+        - 22.x
+        - 24.x
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: Install method
+      options:
+        - npm install -g
+        - npx
+        - Other
+    validations:
+      required: true

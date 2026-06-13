@@ -1,0 +1,17 @@
+{
+  "expectedCommand": "npm install left-pad",
+  "payload": {
+    "conversation_id": "<redacted>",
+    "generation_id": "<redacted>",
+    "model": "composer-2.5",
+    "command": "npm install left-pad",
+    "cwd": "/private/tmp/dg-agent-live-test",
+    "sandbox": false,
+    "session_id": "<redacted>",
+    "hook_event_name": "beforeShellExecution",
+    "cursor_version": "2026.06.12-19-59-36-f6aba9a",
+    "workspace_roots": ["/private/tmp/dg-agent-live-test"],
+    "user_email": "<redacted>",
+    "transcript_path": "<redacted>"
+  }
+}

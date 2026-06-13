@@ -1,0 +1,15 @@
+{
+  "expectedCommand": "npm install left-pad",
+  "payload": {
+    "session_id": "<redacted>",
+    "transcript_path": "<redacted>",
+    "cwd": "/private/tmp/dg-agent-live-test",
+    "hook_event_name": "BeforeTool",
+    "timestamp": "2026-06-13T01:35:56.890Z",
+    "tool_name": "run_shell_command",
+    "tool_input": {
+      "command": "npm install left-pad",
+      "description": "Installing the 'left-pad' package using npm."
+    }
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "agent": "copilot-cli",
+  "agentVersion": "GitHub Copilot CLI 1.0.61",
+  "capturedAt": "2026-06-12",
+  "os": "darwin",
+  "note": "Captured live: hooks load from the inline hooks key in ~/.copilot/settings.json (not ~/.copilot/hooks/ files, not config.json — that file is auto-managed JSONC). toolName is 'bash' (UI label 'shell' is display-only); toolArgs arrives as a JSON-encoded string. Deny honored: copilot refused npm install obug@2.1.3 with 'Denied by preToolUse hook' and surfaced dg's cooldown reason. Windows (powershell toolName?) unverified."
+}

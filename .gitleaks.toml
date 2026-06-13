@@ -1,0 +1,10 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Synthetic secrets exercising dg's own detection and redaction tests"
+paths = [
+    '''test/unit/audit\.test\.ts''',
+    '''test/unit/output-redaction\.test\.ts''',
+    '''test/unit/launcher\.test\.ts''',
+]

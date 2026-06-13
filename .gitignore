@@ -1,0 +1,9 @@
+dist/
+dist.next/
+dist.prev/
+node_modules/
+npm-debug.log*
+*.tgz
+.vitest-build-lock/
+npm-shrinkwrap.json
+.package.json.prepack-backup

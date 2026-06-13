@@ -1,0 +1,58 @@
+{
+  "name": "@westbayberry/dg",
+  "version": "2.2.0",
+  "description": "Dependency Guardian supply-chain firewall CLI",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/WestBayBerry/DG_CLI.git"
+  },
+  "bugs": {
+    "url": "https://github.com/WestBayBerry/DG_CLI/issues"
+  },
+  "homepage": "https://github.com/WestBayBerry/DG_CLI#readme",
+  "type": "module",
+  "bin": {
+    "dg": "./dist/bin/dg.js"
+  },
+  "files": [
+    "dist",
+    "LICENSE",
+    "package.json",
+    "npm-shrinkwrap.json"
+  ],
+  "engines": {
+    "node": ">=22.14.0"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "prepack": "node scripts/sync-shrinkwrap.mjs",
+    "postpack": "node scripts/sync-shrinkwrap.mjs restore",
+    "test": "vitest run",
+    "test:unit": "vitest run test/unit",
+    "test:integration": "vitest run test/integration",
+    "typecheck": "tsc --noEmit",
+    "lint": "node scripts/lint.mjs",
+    "format:check": "node scripts/format-check.mjs",
+    "check:package": "node scripts/check-package-contract.mjs",
+    "check:tarball": "node scripts/check-tarball.mjs",
+    "check:legacy": "node scripts/check-legacy-absence.mjs",
+    "check": "npm run typecheck && npm run lint && npm run format:check && npm run check:package && npm run check:legacy && npm run build && npm run test && npm run check:tarball"
+  },
+  "devDependencies": {
+    "@types/node": "22.15.30",
+    "@types/react": "18.3.28",
+    "ink-testing-library": "4.0.0",
+    "node-pty": "1.0.0",
+    "typescript": "5.8.3",
+    "vitest": "3.1.4"
+  },
+  "license": "Apache-2.0",
+  "private": false,
+  "dependencies": {
+    "chalk": "4.1.2",
+    "ink": "5.2.1",
+    "ink-spinner": "5.0.0",
+    "node-forge": "1.4.0",
+    "react": "18.3.1"
+  }
+}

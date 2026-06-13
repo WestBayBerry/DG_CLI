@@ -1,0 +1,6 @@
+{
+  "expectedCommand": "pip install requests",
+  "payload": {
+    "toolArgs": "{\"command\":\"pip install requests\"}"
+  }
+}

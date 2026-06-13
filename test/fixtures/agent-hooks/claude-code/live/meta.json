@@ -1,0 +1,7 @@
+{
+  "agent": "claude-code",
+  "agentVersion": "claude-code 2.1.176",
+  "capturedAt": "2026-06-12",
+  "os": "darwin",
+  "note": "Captured live from a production Claude Code session. Hooks hot-reload: dg agents on took effect mid-session without restart. Deny honored: the session's own Bash tool call for npm install obug@2.1.3 was blocked with dg's cooldown reason. Paths and session ids sanitized for the public repo. Payload has effort{level} and no model/turn_id fields (drift from the earlier reference shape)."
+}

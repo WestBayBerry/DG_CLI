@@ -1,0 +1,7 @@
+{
+  "agent": "codex",
+  "agentVersion": "codex-cli 0.139.0",
+  "capturedAt": "2026-06-12",
+  "os": "darwin",
+  "note": "Captured live: codex PreToolUse hook invoked dg, dg block honored (codex refused the command)."
+}

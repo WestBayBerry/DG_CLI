@@ -1,0 +1,104 @@
+name: Cold install
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cold-install-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  pack:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      tarball: ${{ steps.pack.outputs.tarball }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v4.2.0
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - name: Pack tarball
+        id: pack
+        run: |
+          set -euo pipefail
+          npm pack
+          tgz=$(ls westbayberry-dg-*.tgz | head -1)
+          if [ -z "$tgz" ]; then
+            echo "::error::npm pack did not produce a tarball"
+            exit 1
+          fi
+          echo "tarball=$tgz" >> "$GITHUB_OUTPUT"
+          echo "Tarball: $tgz ($(wc -c < "$tgz") bytes)"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
+        with:
+          name: cli-tarball
+          path: westbayberry-dg-*.tgz
+          retention-days: 7
+
+  smoke:
+    needs: pack
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-latest, windows-latest]
+        # engines and the runtime guard require Node >=22.14.0, so only supported majors belong here
+        node: ['22', '24']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v4.2.0
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0  # v4.1.8
+        with:
+          name: cli-tarball
+          path: ./tarball
+      - name: Install globally from tarball
+        shell: bash
+        run: |
+          set -euxo pipefail
+          tgz=$(ls ./tarball/westbayberry-dg-*.tgz | head -1)
+          npm install -g "$tgz"
+          which dg
+          dg --version
+      - name: Smoke version
+        shell: bash
+        run: dg --version | grep -E '[0-9]+\.[0-9]+\.[0-9]+'
+      - name: Smoke help
+        shell: bash
+        run: |
+          dg help | grep -i 'scan'
+          dg help | grep -i 'login'
+      - name: Smoke unknown command fails loud
+        shell: bash
+        run: |
+          if dg definitely-not-a-command >/tmp/unk.out 2>&1; then
+            echo "::error::unknown command should exit non-zero"
+            cat /tmp/unk.out
+            exit 1
+          fi
+          grep -iq 'unknown command' /tmp/unk.out || { echo "::error::missing unknown command message"; cat /tmp/unk.out; exit 1; }
+      - name: Smoke scan on an empty project exits 10
+        shell: bash
+        run: |
+          mkdir empty-fixture
+          cd empty-fixture
+          set +e
+          dg scan
+          rc=$?
+          set -e
+          if [ "$rc" -ne 10 ]; then
+            echo "::error::dg scan on an empty directory should exit 10 (nothing to scan), got $rc"
+            exit 1
+          fi

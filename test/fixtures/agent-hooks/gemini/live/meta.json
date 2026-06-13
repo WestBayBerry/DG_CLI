@@ -1,0 +1,7 @@
+{
+  "agent": "gemini",
+  "agentVersion": "Gemini CLI 0.46.0",
+  "capturedAt": "2026-06-12",
+  "os": "darwin",
+  "note": "Captured live via gemini --approval-mode yolo -p. Deny honored: 'Error executing tool run_shell_command: Tool execution blocked' with dg's cooldown reason. Payload is Claude-shaped (tool_input.command) with a string ISO timestamp. CRITICAL: gemini reads the hook timeout field in MILLISECONDS (default 60000) and FAILS OPEN on hook timeout — the original timeout:60 made gemini kill dg at 60ms and run the install ungated; the entry now omits timeout. Headless runs need GEMINI_CLI_TRUST_WORKSPACE=true."
+}

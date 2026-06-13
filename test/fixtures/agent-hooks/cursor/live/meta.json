@@ -1,0 +1,7 @@
+{
+  "agent": "cursor",
+  "agentVersion": "cursor-agent 2026.06.12-19-59-36-f6aba9a",
+  "capturedAt": "2026-06-12",
+  "os": "darwin",
+  "note": "Captured live via cursor-agent -p --force. Deny honored on two runs: cursor refused npm install obug@2.1.3 and surfaced dg's cooldown reason verbatim ('Rejected: DG blocked install'). Payload carries user_email and transcript_path (redacted). Quirk: on deny runs the --record-fixture write never landed in ~/.dg/state while dg's verdict clearly executed; allow-run capture used instead. The same hooks.json also drives the Cursor IDE (1.7+)."
+}

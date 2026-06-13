@@ -1,0 +1,9 @@
+{
+  "expectedCommand": "npm install left-pad",
+  "payload": {
+    "tool_args": {
+      "command": "npm install left-pad"
+    },
+    "cwd": "/work/project"
+  }
+}

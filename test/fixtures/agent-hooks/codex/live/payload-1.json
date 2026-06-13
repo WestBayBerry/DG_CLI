@@ -1,0 +1,17 @@
+{
+  "expectedCommand": "npm ls --depth=0",
+  "payload": {
+    "session_id": "<redacted>",
+    "turn_id": "<redacted>",
+    "transcript_path": "<redacted>",
+    "cwd": "/tmp/dg-codex-live/proj",
+    "hook_event_name": "PreToolUse",
+    "model": "gpt-5.5",
+    "permission_mode": "bypassPermissions",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "npm ls --depth=0"
+    },
+    "tool_use_id": "<redacted>"
+  }
+}

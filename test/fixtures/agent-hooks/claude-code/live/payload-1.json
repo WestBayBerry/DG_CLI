@@ -1,0 +1,18 @@
+{
+  "expectedCommand": "cd /tmp/dg-agent-live-test && npm install obug@2.1.3",
+  "payload": {
+    "session_id": "<redacted>",
+    "transcript_path": "<redacted>",
+    "cwd": "/Users/op/project",
+    "permission_mode": "bypassPermissions",
+    "effort": { "level": "xhigh" },
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "cd /tmp/dg-agent-live-test && npm install obug@2.1.3",
+      "timeout": 60000,
+      "description": "Attempt cooldown-held install to prove claude-code deny path live"
+    },
+    "tool_use_id": "<redacted>"
+  }
+}

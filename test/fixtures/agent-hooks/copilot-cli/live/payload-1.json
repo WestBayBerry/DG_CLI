@@ -1,0 +1,10 @@
+{
+  "expectedCommand": "npm install left-pad",
+  "payload": {
+    "sessionId": "<redacted>",
+    "timestamp": 1781312257205,
+    "cwd": "/private/tmp/dg-agent-live-test",
+    "toolName": "bash",
+    "toolArgs": "{\"command\":\"npm install left-pad\",\"description\":\"Run npm install left-pad\",\"initial_wait\":30}"
+  }
+}

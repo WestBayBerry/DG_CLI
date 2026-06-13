@@ -1,0 +1,8 @@
+{
+  "expectedCommand": "npm install left-pad",
+  "payload": {
+    "tool_input": {
+      "command": "npm install left-pad"
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "expectedCommand": "tail -8 /tmp/run/<session>/output.txt | grep -v \"^$\"; echo \"=== fixture check:\"; npm ls 2>/dev/null | head -1; ls ~/.dg/state/fixtures/ | grep claude",
+  "payload": {
+    "session_id": "<redacted>",
+    "transcript_path": "<redacted>",
+    "cwd": "/Users/op/project",
+    "permission_mode": "bypassPermissions",
+    "effort": { "level": "xhigh" },
+    "hook_event_name": "PreToolUse",
+    "tool_name": "Bash",
+    "tool_input": {
+      "command": "tail -8 /tmp/run/<session>/output.txt | grep -v \"^$\"; echo \"=== fixture check:\"; npm ls 2>/dev/null | head -1; ls ~/.dg/state/fixtures/ | grep claude",
+      "timeout": 60000,
+      "description": "Check suite result and test hook hot-reload with npm ls"
+    },
+    "tool_use_id": "<redacted>"
+  }
+}
