@@ -91,7 +91,7 @@ describe("sentinel migration (claude-code legacy entries)", () => {
   });
 
   function ctx() {
-    return resolveAgentHookContext("claude-code", { env: { HOME: home }, home, dgCommand: "/abs/dg hook-exec claude-code" });
+    return resolveAgentHookContext("claude-code", { env: { HOME: home }, home, dgCommand: `${process.execPath} hook-exec claude-code` });
   }
 
   it("re-install upgrades a legacy registry entry without duplicating it", async () => {
@@ -195,8 +195,8 @@ describe("cross-agent isolation", () => {
   });
 
   it("removing one agent's hook leaves the other verified, and uninstall reverses both", async () => {
-    const claude = resolveAgentHookContext("claude-code", { env: { HOME: home }, home, dgCommand: "/abs/dg hook-exec claude-code" });
-    const codex = resolveAgentHookContext("codex", { env: { HOME: home }, home, dgCommand: "/abs/dg hook-exec codex" });
+    const claude = resolveAgentHookContext("claude-code", { env: { HOME: home }, home, dgCommand: `${process.execPath} hook-exec claude-code` });
+    const codex = resolveAgentHookContext("codex", { env: { HOME: home }, home, dgCommand: `${process.execPath} hook-exec codex` });
     await applyAgentHook(claude);
     await applyAgentHook(codex);
     expect(verifyAgentHook(claude).every((check) => check.ok)).toBe(true);
@@ -233,7 +233,7 @@ describe("fs safety on agent config writes", () => {
   });
 
   it("refuses to write through a world-writable settings file", async () => {
-    const c = resolveAgentHookContext("claude-code", { env: { HOME: home }, home, dgCommand: "/abs/dg hook-exec claude-code" });
+    const c = resolveAgentHookContext("claude-code", { env: { HOME: home }, home, dgCommand: `${process.execPath} hook-exec claude-code` });
     mkdirSync(join(home, ".claude"), { recursive: true });
     writeFileSync(c.settingsPath, "{}\n");
     chmodSync(c.settingsPath, 0o602);
@@ -241,7 +241,7 @@ describe("fs safety on agent config writes", () => {
   });
 
   it("still verifies and round-trips through the registry helpers", async () => {
-    const c = resolveAgentHookContext("claude-code", { env: { HOME: home }, home, dgCommand: "/abs/dg hook-exec claude-code" });
+    const c = resolveAgentHookContext("claude-code", { env: { HOME: home }, home, dgCommand: `${process.execPath} hook-exec claude-code` });
     await applyAgentHook(c);
     expect(verifyAgentHook(c).every((check) => check.ok)).toBe(true);
     const paths = resolveDgPaths({ HOME: home });

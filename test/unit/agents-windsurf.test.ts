@@ -22,7 +22,7 @@ describe("windsurf integration", () => {
   });
 
   function ctx() {
-    return resolveAgentHookContext("windsurf", { env: { HOME: home }, home, dgCommand: "/abs/dg hook-exec windsurf" });
+    return resolveAgentHookContext("windsurf", { env: { HOME: home }, home, dgCommand: `${process.execPath} hook-exec windsurf` });
   }
 
   it("parses tool_info.command_line and fails closed otherwise", () => {
@@ -39,7 +39,7 @@ describe("windsurf integration", () => {
     expect(deny.stdout).toContain("evil@1");
     const ask = windsurfIntegration.emitDecision({ decision: "ask", reason: "DG flagged" });
     expect(ask.exitCode).toBe(2);
-    expect(ask.stdout).toContain("flagged for review");
+    expect(ask.stdout).toContain("human review");
   });
 
   it("merges a pre_run_command entry preserving sibling hooks and removes only its own", async () => {

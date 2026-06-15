@@ -567,7 +567,7 @@ function trustStoreOperation<T>(operation: () => T): T {
   }
 }
 
-function withServiceLock<T>(paths: ServicePaths, run: () => T): T {
+export function withServiceLock<T>(paths: ServicePaths, run: () => T): T {
   const lock = acquireLockSync(paths.paths, SERVICE_LOCK, {
     staleMs: SERVICE_LOCK_STALE_MS
   });

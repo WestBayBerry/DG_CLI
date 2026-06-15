@@ -32,6 +32,30 @@ if (result.status !== 0) {
 
 await chmod(fileURLToPath(new URL("./dist.next/bin/dg.js", import.meta.url)), 0o755);
 
+// The self-cleaning shim runs this after `npm uninstall -g` removes the package,
+// so it must be a single file under dist/ with no surviving relative imports.
+const esbuild = await import("esbuild").catch(() => null);
+if (!esbuild) {
+  await rm(staging, { force: true, recursive: true });
+  console.error("build: esbuild (a hoisted dev dependency) is required to bundle the standalone uninstaller");
+  process.exit(1);
+}
+try {
+  await esbuild.build({
+    entryPoints: [fileURLToPath(new URL("./dist.next/setup/uninstall-standalone.js", import.meta.url))],
+    outfile: fileURLToPath(new URL("./dist.next/standalone/uninstall.mjs", import.meta.url)),
+    bundle: true,
+    platform: "node",
+    format: "esm",
+    target: "node22",
+    logLevel: "warning"
+  });
+} catch (error) {
+  await rm(staging, { force: true, recursive: true });
+  console.error(`build: failed to bundle standalone uninstaller: ${error.message}`);
+  process.exit(1);
+}
+
 await rename(dist, previous).catch((error) => {
   if (error?.code !== "ENOENT") throw error;
 });

@@ -176,6 +176,16 @@ describe("staged scan — verdict to exit", () => {
     expect(result.exitCode).toBe(2);
     expect(result.stderr).toContain("blocked this commit");
   });
+
+  it("scanner outage → exit 1 (blocks) when gitHook.onIncomplete=block (B1-H2)", () => {
+    saveUserConfig(setConfigValue(DEFAULT_CONFIG, "gitHook.onIncomplete", "block"), env);
+    const outage = report("pass");
+    delete (outage as { scanner?: unknown }).scanner;
+    (outage as { status: ScanStatus }).status = "error";
+    const result = decideStagedVerdict(outage, env);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain("onIncomplete=block");
+  });
 });
 
 describe("staged scan — staging + orchestration", () => {

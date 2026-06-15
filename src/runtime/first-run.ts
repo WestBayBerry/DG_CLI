@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { dgVersion } from "../commands/version.js";
 import { isCiEnv } from "../presentation/mode.js";
 import { createTheme } from "../presentation/theme.js";
-import { sweepLegacyPythonHooks } from "../setup/plan.js";
+import { refreshSetupOnUpgrade, sweepLegacyPythonHooks } from "../setup/plan.js";
 import { resolveDgPaths, type DgPathEnvironment } from "../state/index.js";
 
 const SKIP_COMMANDS = new Set([
@@ -50,6 +50,7 @@ export function sweepLegacyHooksOnVersionChange(
       return false;
     }
     sweepLegacyPythonHooks(resolveDgPaths(env).homeDir, [], []);
+    refreshSetupOnUpgrade(env);
     mkdirSync(dirname(marker), { recursive: true, mode: 0o700 });
     writeFileSync(marker, `${version}\n`, { encoding: "utf8", mode: 0o600 });
     return true;

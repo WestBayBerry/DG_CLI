@@ -81,6 +81,19 @@ describe("dg agents", () => {
     expect(after.stdout).toContain("✓ dg PreToolUse hook: installed");
   });
 
+  it("surfaces the degraded network-gate posture loudly on 'on' and '--check' when the gate is off", async () => {
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    const applied = await runAgentsCommand(["on"], env, home);
+    expect(applied.stdout).toContain("network gate OFF");
+    expect(applied.stdout).toContain("absolute-path installs");
+    expect(applied.stdout).toContain("dg service start");
+
+    const checked = await runAgentsCommand(["--check", "claude-code"], env, home);
+    expect(checked.stdout).toContain("network gate:");
+    expect(checked.stdout).toContain("OFF — static pre-screen only");
+    expect(checked.stdout).toContain("recognized-but-unsupported managers");
+  });
+
   it("--print previews the write without applying it", async () => {
     mkdirSync(join(home, ".claude"), { recursive: true });
     const result = await runAgentsCommand(["--print", "claude-code"], env, home);

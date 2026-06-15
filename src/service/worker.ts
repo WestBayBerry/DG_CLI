@@ -3,7 +3,7 @@ import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { startProductionHttpProxy, type ProductionProxyHandle } from "../proxy/server.js";
 import type { PackageManagerClassification } from "../launcher/classify.js";
 import type { SessionHandle } from "../state/index.js";
-import { resolveServicePaths, TRUST_SENTINEL } from "./state.js";
+import { resolveServicePaths, TRUST_SENTINEL, withServiceLock } from "./state.js";
 import { refreshServiceTrustAfterCaRotation } from "./trust-refresh.js";
 
 const sessionPath = process.argv[2];
@@ -69,13 +69,13 @@ proxy = await startProductionHttpProxy({
   apiBaseUrl: requiredApiBaseUrl,
   classification,
   env: process.env,
-  onCaRotate: () => refreshServiceTrustAfterCaRotation({
+  onCaRotate: () => withServiceLock(servicePaths, () => refreshServiceTrustAfterCaRotation({
     serviceDir: servicePaths.serviceDir,
     trustRecordPath: servicePaths.trustRecordPath,
     sentinel: TRUST_SENTINEL,
     caPath: session.files.ca,
     env: process.env
-  })
+  }))
 });
 healthServer = await startHealthServer(proxy.port);
 

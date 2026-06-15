@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { classifyPackageManagerInvocation } from "../../src/launcher/classify.js";
 import { createSessionSync, resolveDgPaths } from "../../src/state/index.js";
 import { loadProjectCooldownExemptions } from "../../src/launcher/run.js";
+import { appendCooldownExemptions, findProjectRoot, mutateDgFile } from "../../src/project/dgfile.js";
 import { proxyAuthorizationValue, readProxyAuthToken } from "../../src/proxy/auth.js";
 import { COOLDOWN_EXEMPTIONS_ENV, writeCooldownExemptionsFile } from "../../src/proxy/cooldown-exemptions-file.js";
 
@@ -168,13 +169,11 @@ describe("proxy cooldown exemption (real worker process, end-to-end)", () => {
     const project = tempDir("dg-e2e-project-");
     const env = baseEnv(home);
     spawnSync("git", ["init", "-q"], { cwd: project, env });
-    writeFileSync(
-      join(project, "dg.json"),
-      JSON.stringify({
-        version: 1,
-        cooldownExemptions: [{ ecosystem: "npm", name: "left-pad", reason: "vendored", acceptedBy: "alice", acceptedAt: "2026-06-01T00:00:00.000Z" }]
-      }),
-      "utf8"
+    // Author through the stamped write path (what `dg cooldown add` does) so the
+    // exemption carries the local-author tag the enforcement gate now requires.
+    const root = findProjectRoot(project, env) ?? project;
+    mutateDgFile(root, env, (file) =>
+      appendCooldownExemptions(file, [{ ecosystem: "npm", name: "left-pad", reason: "vendored", acceptedBy: "alice" }]),
     );
 
     const exemptions = loadProjectCooldownExemptions(env, project);
@@ -201,7 +200,7 @@ describe("proxy cooldown exemption (real worker process, end-to-end)", () => {
     expect(rightPad, "API never saw the right-pad verdict request").toBeDefined();
 
     expect(leftPad?.cooldown).toBeUndefined();
-    expect(rightPad?.cooldown).toEqual({ minAgeDays: 1, onUnknown: "allow" });
+    expect(rightPad?.cooldown).toEqual({ minAgeDays: 1, onUnknown: "block" });
 
     expect(exemptStatus).toBe(200);
     expect(enforcedStatus).toBe(200);
@@ -236,6 +235,6 @@ describe("proxy cooldown exemption (real worker process, end-to-end)", () => {
 
     await proxyGet(worker, `${registry.url}/left-pad/-/left-pad-1.3.0.tgz`);
     expect(await waitFor(() => seen.length >= 1, 15_000)).toBe(true);
-    expect(seen[0]?.cooldown).toEqual({ minAgeDays: 1, onUnknown: "allow" });
+    expect(seen[0]?.cooldown).toEqual({ minAgeDays: 1, onUnknown: "block" });
   }, 45_000);
 });

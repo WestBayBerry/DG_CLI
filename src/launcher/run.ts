@@ -4,8 +4,9 @@ import { constants as osConstants } from "node:os";
 import { fileURLToPath } from "node:url";
 import type { CommandResult } from "../commands/types.js";
 import { EXIT_UNAVAILABLE } from "../commands/types.js";
-import { loadUserConfig } from "../config/settings.js";
+import { loadUserConfig, trustsProjectOverrides } from "../config/settings.js";
 import { findProjectRoot, loadDgFile, type CooldownExemption } from "../project/dgfile.js";
+import { honoredOverrides } from "../project/override-trust.js";
 import { writeCooldownExemptionsFile } from "../proxy/cooldown-exemptions-file.js";
 import { writePreverifiedFile, type PreverifiedEntry } from "../proxy/preverified.js";
 import { describeBlockedInstall, describeFlaggedWarn, renderInstallDecision } from "../install-ui/block-render.js";
@@ -15,6 +16,7 @@ import { isCiEnv, resolvePresentation } from "../presentation/mode.js";
 import { maybeSetupNudge } from "../runtime/nudges.js";
 import { createTheme } from "../presentation/theme.js";
 import { readProxySessionState } from "../proxy/server.js";
+import { readServiceState } from "../service/state.js";
 import { cleanupSessionSync, createSessionSync, resolveDgPaths, type SessionHandle } from "../state/index.js";
 import {
   classifyPackageManagerInvocation,
@@ -22,13 +24,13 @@ import {
   type PackageManagerClassification,
   type SupportedPackageManager
 } from "./classify.js";
-import { buildProxyChildEnv } from "./env.js";
+import { buildProxyChildEnv, scrubChildSecrets } from "./env.js";
 import { prepareCargoHome, userCargoHome } from "./cargo-cache.js";
 import { cachedPipResolution } from "./install-preflight.js";
 import { createStreamRedactor, redactSecrets } from "./output-redaction.js";
 import { resolveSpawnInvocation } from "./spawn-invocation.js";
 import { resolveRealBinary, type ResolveRealBinaryResult } from "./resolve-real-binary.js";
-import { runScriptGateAfterInstall } from "../scripts/gate.js";
+import { runScriptGateAfterInstall, scriptGateChildEnv, scriptGateInstallArgs } from "../scripts/gate.js";
 
 export const EXIT_INSTALL_BLOCKED = 2;
 
@@ -60,6 +62,49 @@ export { resolveSpawnInvocation, type SpawnInvocation } from "./spawn-invocation
 export function shimDepth(env: NodeJS.ProcessEnv): number {
   const parsed = Number.parseInt(env.DG_SHIM_DEPTH ?? "", 10);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : 0;
+}
+
+// A genuine parent dg proxy sets DG_PROXY_ACTIVE=1 and routes the child through a
+// loopback proxy URL that carries the proxy's auth token (buildProxyChildEnv ->
+// proxyUrlWithAuth). All of these must hold for a nested invocation to safely run
+// the real package manager directly (its traffic still flows through the live
+// parent proxy). DG_PROXY_ACTIVE + a bare loopback URL are both forgeable, so:
+//  - the URL must carry a dg auth token (a forged HTTPS_PROXY=http://127.0.0.1:1
+//    with no credential is rejected), and
+//  - when a persistent dg service is the parent (the agent-routing case), the URL
+//    must match that live service's proxy, so a forged token cannot impersonate it.
+// If neither matches, we start our own verifying proxy rather than trust the env.
+export function inheritedDgProxyActive(env: NodeJS.ProcessEnv): boolean {
+  if (env.DG_PROXY_ACTIVE !== "1") {
+    return false;
+  }
+  const proxyUrl = env.HTTPS_PROXY ?? env.https_proxy ?? env.HTTP_PROXY ?? env.http_proxy;
+  if (!proxyUrl) {
+    return false;
+  }
+  let url: URL;
+  try {
+    url = new URL(proxyUrl);
+  } catch {
+    return false;
+  }
+  const host = url.hostname.replace(/^\[(.*)\]$/, "$1");
+  if (host !== "127.0.0.1" && host !== "::1" && host !== "localhost") {
+    return false;
+  }
+  if (!url.username && !url.password) {
+    return false;
+  }
+  try {
+    const { state } = readServiceState(env);
+    if (state.running && state.proxy) {
+      const live = new URL(state.proxy.proxyUrl);
+      return live.hostname.replace(/^\[(.*)\]$/, "$1") === host && live.port === url.port;
+    }
+  } catch {
+    // No readable service state — fall through to the session-proxy path below.
+  }
+  return true;
 }
 
 export function rootUnprotectedNotice(
@@ -112,11 +157,11 @@ export function createLaunchPlan(manager: PackageManager, args: readonly string[
     classification,
     realBinary,
     startsProxy: classification.kind === "protected",
-    childEnv: {
+    childEnv: scrubChildSecrets({
       ...env,
       DG_SHIM_ACTIVE: shimNonce(manager, env),
       DG_SHIM_DEPTH: String(shimDepth(env) + 1)
-    }
+    })
   };
 }
 
@@ -146,16 +191,20 @@ export async function runPackageManager(
       stderr: `dg: ${manager} shim exec loop detected (DG_SHIM_DEPTH=${depth}) — refusing to re-enter\n`
     };
   }
-  if (depth === 1 && plan.startsProxy) {
-    const child = await spawnPackageManager(plan, args, options);
-    return {
-      exitCode: child.exitCode,
-      stdout: streamedOut(child.stdout, options),
-      stderr: `dg: re-entered through its own shim — running the real ${plan.classification.realBinaryName} directly\n${streamedErr(child.stderr, options)}`
-    };
-  }
-
   if (plan.startsProxy) {
+    // Reuse a parent dg proxy ONLY when one is genuinely live in this environment
+    // (the parent set DG_PROXY_ACTIVE and a loopback proxy URL). An env var such as
+    // a forged or stale DG_SHIM_DEPTH must never be what decides to skip
+    // verification: if no live dg proxy is detected, start one rather than run the
+    // install unproxied. DG_SHIM_DEPTH is only the >=2 infinite-recursion backstop.
+    if (inheritedDgProxyActive(options.env ?? process.env)) {
+      const child = await spawnPackageManager(plan, args, options);
+      return {
+        exitCode: child.exitCode,
+        stdout: streamedOut(child.stdout, options),
+        stderr: `dg: re-entered through its own shim — running the real ${plan.classification.realBinaryName} directly\n${streamedErr(child.stderr, options)}`
+      };
+    }
     if (!options.proxyVerdict) {
       return runWithProductionProxy(plan, args, options);
     }
@@ -358,6 +407,7 @@ export async function runWithProductionProxyLive(
       cacheDir: prepareProxyCacheDir(plan.classification.manager, proxy.session.dir, env)
     });
     const spawner = options.spawner ?? defaultSpawner;
+    const hardened = applyScriptGateHardening(plan, args, childEnv, env);
     const resolvedTotal =
       plan.classification.manager === "pip" ? cachedPipResolution(plan.realBinary.path ?? "", args)?.count : undefined;
     const poll = setInterval(() => {
@@ -367,8 +417,8 @@ export async function runWithProductionProxyLive(
     try {
       finished = await spawner({
         binary: plan.realBinary.path ?? "",
-        args,
-        env: childEnv
+        args: hardened.args,
+        env: hardened.env
       });
     } finally {
       clearInterval(poll);
@@ -420,6 +470,28 @@ function installOutcome(stdout: string): string {
   return lines.length > 0 ? `${lines.join("\n")}\n` : "";
 }
 
+// scriptGate.mode === "enforce" is applied HERE, at the spawn boundary: it
+// rewrites the install args (--ignore-scripts) and child env
+// (npm_config_ignore_scripts) for npm/yarn so a reputation-clean package can't
+// run a lifecycle script. observe/off leave the install untouched. Without this
+// the mode setting was inert — the verdict screens what is fetched, this gates
+// what the fetched package is allowed to execute.
+function applyScriptGateHardening(
+  plan: LaunchPlan,
+  args: readonly string[],
+  childEnv: NodeJS.ProcessEnv,
+  configEnv: NodeJS.ProcessEnv
+): { readonly args: readonly string[]; readonly env: NodeJS.ProcessEnv } {
+  const mode = loadUserConfig(configEnv).scriptGate.mode;
+  const manager = plan.classification.manager;
+  const hardenedArgs = scriptGateInstallArgs({ mode, manager, args, env: childEnv });
+  const gateEnv = scriptGateChildEnv({ mode, manager, args, env: childEnv });
+  return {
+    args: hardenedArgs,
+    env: Object.keys(gateEnv).length > 0 ? { ...childEnv, ...gateEnv } : childEnv
+  };
+}
+
 async function spawnPackageManager(plan: LaunchPlan, args: readonly string[], options: RunPackageManagerOptions): Promise<SpawnStreamResult> {
   if (!plan.realBinary.path) {
     return {
@@ -429,10 +501,11 @@ async function spawnPackageManager(plan: LaunchPlan, args: readonly string[], op
     };
   }
   const spawner = options.spawner ?? defaultSpawner;
+  const hardened = applyScriptGateHardening(plan, args, plan.childEnv, options.env ?? process.env);
   return spawner({
     binary: plan.realBinary.path,
-    args,
-    env: plan.childEnv,
+    args: hardened.args,
+    env: hardened.env,
     onStdout: options.onStdout,
     onStderr: options.onStderr
   });
@@ -522,7 +595,10 @@ export function loadProjectCooldownExemptions(env: NodeJS.ProcessEnv, cwd: strin
       return [];
     }
     const file = loadDgFile(root);
-    return file.readable ? file.cooldownExemptions : [];
+    if (!file.readable) {
+      return [];
+    }
+    return honoredOverrides(file, root, env, trustsProjectOverrides(env)).exemptions;
   } catch {
     return [];
   }

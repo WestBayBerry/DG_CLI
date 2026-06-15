@@ -218,7 +218,10 @@ async function scanProjects(
 
     if (responses.length > 0) {
       const merged = mergeAnalyzeResponses(responses);
-      const base = firstFailure && merged.action === "pass" ? { ...merged, action: "analysis_incomplete" as const } : merged;
+      // A failed ecosystem means its verdict is unknown; escalate anything short of
+      // a confirmed block to analysis_incomplete so a warn from the succeeded
+      // ecosystem does not present as the whole verdict while the other is unscanned.
+      const base = firstFailure && merged.action !== "block" ? { ...merged, action: "analysis_incomplete" as const } : merged;
       const ecoByKey = new Map<string, "npm" | "pypi">();
       for (const [ecosystem, packages] of entries) {
         for (const pkg of packages) {

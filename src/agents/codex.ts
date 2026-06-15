@@ -25,7 +25,7 @@ function emitDecision(verdict: AgentVerdict): EmittedDecision {
     return { stdout: "", exitCode: 0 };
   }
   const reason = verdict.reason ?? "Dependency Guardian firewall";
-  const suffix = verdict.decision === "ask" ? " (flagged for review — run the install in a terminal to decide)" : "";
+  const suffix = verdict.decision === "ask" ? " (dg flagged this for human review — not auto-approved)" : "";
   return {
     stdout: JSON.stringify({ decision: "block", reason: `${reason}${suffix}` }),
     exitCode: 0,

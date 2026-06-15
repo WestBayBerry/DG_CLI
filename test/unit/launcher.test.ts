@@ -5,7 +5,7 @@ import { describe, expect, it } from "vitest";
 import { auditLogPath } from "../../src/audit/events.js";
 import { renderInstallDecision } from "../../src/install-ui/block-render.js";
 import { classifyPackageManagerInvocation, type PackageManager } from "../../src/launcher/classify.js";
-import { buildProxyChildEnv } from "../../src/launcher/env.js";
+import { buildAgentRoutingEnv, buildProxyChildEnv } from "../../src/launcher/env.js";
 import { redactSecrets } from "../../src/launcher/output-redaction.js";
 import {
   createLaunchPlan,
@@ -14,6 +14,7 @@ import {
   rootUnprotectedNotice,
   runPackageManager,
   shimDepth,
+  inheritedDgProxyActive,
   type PackageManagerSpawner
 } from "../../src/launcher/run.js";
 import type { CooldownExemption } from "../../src/project/dgfile.js";
@@ -70,6 +71,21 @@ describe("package manager classification", () => {
       expect(classification.kind).toBe("passthrough");
     });
   }
+
+  it("normalizes version-suffixed pip/python to the base manager (pip3 ⇒ pip)", () => {
+    const pip3 = classifyPackageManagerInvocation("pip3" as PackageManager, ["install", "requests"]);
+    expect(pip3.kind).toBe("protected");
+    expect(pip3.manager).toBe("pip");
+    expect(pip3.ecosystem).toBe("python");
+    expect(classifyPackageManagerInvocation("pip3.12" as PackageManager, ["install", "requests"]).kind).toBe("protected");
+    // pipx must NOT collapse to pip.
+    expect(classifyPackageManagerInvocation("pipx", ["install", "black"]).manager).toBe("pipx");
+  });
+
+  it("classifies uv run --with as a fetch path but leaves a bare uv run alone", () => {
+    expect(classifyPackageManagerInvocation("uv", ["run", "--with", "evil", "python"]).kind).toBe("protected");
+    expect(classifyPackageManagerInvocation("uv", ["run", "python", "script.py"]).kind).toBe("passthrough");
+  });
 
   it("leaves gated ecosystems unclaimed", () => {
     expect(classifyPackageManagerInvocation("bun", ["add", "left-pad"]).kind).toBe("unsupported");
@@ -489,6 +505,25 @@ describe("launcher planning", () => {
   });
 });
 
+describe("buildAgentRoutingEnv", () => {
+  it("sets every manager's proxy + CA var (literal values, no shell expansion) plus DG_PROXY_ACTIVE", () => {
+    const env = buildAgentRoutingEnv("http://127.0.0.1:19000", "/tmp/dg-ca.pem");
+    expect(env.DG_PROXY_ACTIVE).toBe("1");
+    // node/npm, pip, uv, cargo CA vars all present so any tool the agent runs trusts the proxy CA.
+    for (const k of ["NODE_EXTRA_CA_CERTS", "REQUESTS_CA_BUNDLE", "PIP_CERT", "SSL_CERT_FILE", "CARGO_HTTP_CAINFO"]) {
+      expect(env[k]).toBe("/tmp/dg-ca.pem");
+    }
+    for (const k of ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "npm_config_proxy", "npm_config_https_proxy"]) {
+      expect(env[k]).toBe("http://127.0.0.1:19000");
+    }
+    expect(env.NO_PROXY).toBe("127.0.0.1,localhost");
+    // No value contains a shell metachar — safe to drop into a settings `env` block verbatim.
+    for (const v of Object.values(env)) {
+      expect(v).not.toMatch(/[$`]/);
+    }
+  });
+});
+
 describe("child env injection and redaction", () => {
   it("controls NO_PROXY to loopback only, dropping an inherited registry-disabling value", () => {
     // An inherited NO_PROXY naming the registry (or a `*`/`.org` glob) would route
@@ -813,12 +848,40 @@ describe("shim re-entry guard", () => {
     expect(shimDepth({ DG_SHIM_DEPTH: "2" })).toBe(2);
   });
 
+  it("only treats a re-entry as proxied when a live loopback dg proxy is present (B1-H1)", async () => {
+    // Isolated HOME so readServiceState deterministically finds no service.
+    const home = await mkdtemp(join(tmpdir(), "dg-reentry-"));
+    const e = (extra: NodeJS.ProcessEnv): NodeJS.ProcessEnv => ({ HOME: home, ...extra });
+    try {
+      // forged/stale env vars must NOT count as a live proxy
+      expect(inheritedDgProxyActive(e({ DG_SHIM_DEPTH: "1" }))).toBe(false);
+      expect(inheritedDgProxyActive(e({ DG_PROXY_ACTIVE: "1" }))).toBe(false);
+      expect(inheritedDgProxyActive(e({ DG_PROXY_ACTIVE: "1", HTTP_PROXY: "" }))).toBe(false);
+      expect(inheritedDgProxyActive(e({ DG_PROXY_ACTIVE: "1", HTTP_PROXY: "http://evil.example:8080" }))).toBe(false);
+      // a bare loopback proxy with NO dg auth token is forgeable — reject it
+      expect(inheritedDgProxyActive(e({ DG_PROXY_ACTIVE: "1", HTTP_PROXY: "http://127.0.0.1:54321" }))).toBe(false);
+      expect(inheritedDgProxyActive(e({ DG_PROXY_ACTIVE: "1", HTTPS_PROXY: "http://127.0.0.1:1" }))).toBe(false);
+      // genuine nesting (no persistent service): parent dg proxy set DG_PROXY_ACTIVE
+      // + a loopback proxy URL carrying the proxy's auth token
+      expect(inheritedDgProxyActive(e({ DG_PROXY_ACTIVE: "1", HTTP_PROXY: "http://dg:tok@127.0.0.1:54321" }))).toBe(true);
+      expect(inheritedDgProxyActive(e({ DG_PROXY_ACTIVE: "1", HTTPS_PROXY: "http://dg:tok@localhost:54321" }))).toBe(true);
+    } finally {
+      await rm(home, { force: true, recursive: true });
+    }
+  });
+
   it("threads an incremented DG_SHIM_DEPTH into the child env", () => {
     expect(createLaunchPlan("npm", ["run", "build"], { PATH: "" }).childEnv.DG_SHIM_DEPTH).toBe("1");
     expect(createLaunchPlan("npm", ["run", "build"], { PATH: "", DG_SHIM_DEPTH: "1" }).childEnv.DG_SHIM_DEPTH).toBe("2");
   });
 
-  it("runs the real binary directly at depth 1 instead of nesting a proxy", async () => {
+  it("scrubs the dg account credential from the non-proxy child env (B1-M4)", () => {
+    const plan = createLaunchPlan("npm", ["run", "build"], { PATH: "", DG_API_KEY: "dg_live_x", DG_API_TOKEN: "dg_live_y" });
+    expect(plan.childEnv.DG_API_KEY).toBeUndefined();
+    expect(plan.childEnv.DG_API_TOKEN).toBeUndefined();
+  });
+
+  it("runs the real binary directly when re-entered under a live dg proxy", async () => {
     const temp = await mkdtemp(join(tmpdir(), "dg-launcher-depth1-"));
     const binDir = join(temp, "bin");
     await mkdir(binDir);
@@ -830,7 +893,9 @@ describe("shim re-entry guard", () => {
         env: {
           HOME: temp,
           PATH: binDir,
-          DG_SHIM_DEPTH: "1"
+          DG_SHIM_DEPTH: "1",
+          DG_PROXY_ACTIVE: "1",
+          HTTP_PROXY: "http://dg:tok@127.0.0.1:54321"
         },
         spawner: (request) => {
           spawned.push(request.binary);
@@ -1011,6 +1076,63 @@ describe("script-gate observe wiring", () => {
       expect(result.exitCode).toBe(0);
       expect(result.stderr).toContain("dg scripts: 1 package ran install scripts (esbuild@0.25.5)");
       expect(result.stderr).toContain("observed, not blocked");
+    } finally {
+      await rm(temp, { force: true, recursive: true });
+    }
+  });
+
+  it("enforce mode injects --ignore-scripts and npm_config_ignore_scripts into the npm spawn", async () => {
+    const temp = await mkdtemp(join(tmpdir(), "dg-launcher-script-enforce-"));
+    const binDir = join(temp, "bin");
+    await mkdir(binDir);
+    await writeExecutable(join(binDir, "npm"), "#!/bin/sh\nprintf should-not-run\n");
+    const project = await fixtureProject(temp);
+    const paths = resolveDgPaths({ HOME: temp });
+    await mkdir(paths.configDir, { recursive: true });
+    await writeFile(join(paths.configDir, "config.json"), JSON.stringify({ version: 1, scriptGate: { mode: "enforce", observe: false } }), "utf8");
+
+    let captured: { args: readonly string[]; env: NodeJS.ProcessEnv } | undefined;
+    const capturingSpawner: PackageManagerSpawner = (req) => {
+      captured = { args: req.args, env: req.env };
+      return Promise.resolve({ exitCode: 0, stdout: "added 1 package\n", stderr: "" });
+    };
+
+    try {
+      const result = await runPackageManager("npm", ["install", "esbuild"], {
+        env: { HOME: temp, PATH: binDir },
+        proxyVerdict: { verdict: "pass", packageName: "esbuild", cause: "pass", reason: "proxy verdict pass" },
+        spawner: capturingSpawner,
+        projectDir: project
+      });
+      expect(result.exitCode).toBe(0);
+      expect(captured?.args).toContain("--ignore-scripts");
+      expect(captured?.env.npm_config_ignore_scripts).toBe("true");
+    } finally {
+      await rm(temp, { force: true, recursive: true });
+    }
+  });
+
+  it("observe mode does NOT inject --ignore-scripts", async () => {
+    const temp = await mkdtemp(join(tmpdir(), "dg-launcher-script-observe-"));
+    const binDir = join(temp, "bin");
+    await mkdir(binDir);
+    await writeExecutable(join(binDir, "npm"), "#!/bin/sh\nprintf should-not-run\n");
+    const project = await fixtureProject(temp);
+
+    let captured: readonly string[] | undefined;
+    const capturingSpawner: PackageManagerSpawner = (req) => {
+      captured = req.args;
+      return Promise.resolve({ exitCode: 0, stdout: "added 1 package\n", stderr: "" });
+    };
+
+    try {
+      await runPackageManager("npm", ["install", "esbuild"], {
+        env: { HOME: temp, PATH: binDir },
+        proxyVerdict: { verdict: "pass", packageName: "esbuild", cause: "pass", reason: "proxy verdict pass" },
+        spawner: capturingSpawner,
+        projectDir: project
+      });
+      expect(captured).not.toContain("--ignore-scripts");
     } finally {
       await rm(temp, { force: true, recursive: true });
     }

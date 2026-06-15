@@ -1,13 +1,17 @@
 import { access, chmod, lstat, mkdir, readFile, stat, symlink, utimes, writeFile } from "node:fs/promises";
 import { mkdtemp } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { runCli } from "../../src/runtime/cli.js";
 import {
   buildSetupPlan,
   doctorReport,
   isValidShimSource,
+  refreshSetupOnUpgrade,
   SetupUnsupportedPlatformError,
   shimSource,
   uninstallSetup,
@@ -303,7 +307,10 @@ describe("doctor command", () => {
     expect(text.exitCode).toBe(0);
     expect(text.stdout).toContain("DG doctor");
     expect(text.stdout).toContain("Environment");
-    expect(text.stdout).toContain("✓ Setup");
+    // The offline test config points api.baseUrl at a non-default endpoint, which
+    // the config check now surfaces as a warning, so Setup carries a ⚠ here.
+    expect(text.stdout).toContain("Setup");
+    expect(text.stdout).toContain("non-default API endpoint");
     expect(text.stdout).not.toContain("node");
     expect(text.stdout).not.toContain("shims");
     expect(text.stdout).not.toContain("service");
@@ -490,6 +497,31 @@ describe("shim source escaping and validation", () => {
     expect(isValidShimSource("drifted\n", "npm")).toBe(false);
   });
 
+  it("self-heals after the package is gone without disturbing the hot path or fail-open", () => {
+    const source = shimSource("npm");
+    const hotPathExec = source.indexOf('exec "');
+    const selfHeal = source.indexOf("uninstall.mjs");
+    expect(hotPathExec).toBeGreaterThanOrEqual(0);
+    expect(selfHeal).toBeGreaterThan(hotPathExec);
+    expect(source).toContain('if [ -f "$dg_home/uninstall.mjs" ] && command -v node');
+    expect(source).toContain("sleep 10");
+    expect(source).toContain('node "$dg_home/uninstall.mjs" --quiet');
+    expect(source).toMatch(/\)\s*>\/dev\/null 2>&1 &/);
+    expect(source).toContain('real_bin=$(PATH="$dg_path" command -v npm');
+    expect(source).toContain('exec "$real_bin" "$@"');
+  });
+
+  it("fail-closed variant keeps the dg hot path but refuses instead of falling back to the real binary", () => {
+    const failClosed = shimSource("npm", { failClosed: true });
+    expect(isValidShimSource(failClosed, "npm")).toBe(true);
+    expect(failClosed).toContain('DG_SHIM_ACTIVE="${DG_SHIM_ACTIVE:+$DG_SHIM_ACTIVE,}npm:$$" exec');
+    expect(failClosed).toContain("refusing to run npm");
+    expect(failClosed).toContain("policy.shimFailClosed");
+    expect(failClosed).not.toContain('exec "$real_bin"');
+    expect(failClosed).not.toContain("uninstall.mjs");
+    expect(failClosed.trimEnd().endsWith("exit 127")).toBe(true);
+  });
+
   it("escapes special characters in the dg entrypoint path so the shim stays parseable", () => {
     const originalArgv1 = process.argv[1];
     process.argv[1] = '/opt/dg dir/"weird"/$HOME/`cmd`/dg.js';
@@ -511,6 +543,65 @@ describe("shim source escaping and validation", () => {
     const weird = join(home, 'space dir', 'a"b$c');
     const plan = buildSetupPlan({ shell: "bash", env: { HOME: weird, SHELL: "/bin/bash" } });
     expect(plan.shimDir).toContain('a"b$c');
+  });
+});
+
+describe("standalone uninstaller", () => {
+  it("a built setup installs a self-contained uninstaller that reverses the whole setup", async () => {
+    const distDg = fileURLToPath(new URL("../../dist/bin/dg.js", import.meta.url));
+    if (!existsSync(distDg)) {
+      return;
+    }
+    const home = await tempHome();
+    const cleanPath = (process.env.PATH ?? "/usr/bin:/bin")
+      .split(":")
+      .filter((entry) => !entry.endsWith("/.dg/shims"))
+      .join(":");
+    const env = { HOME: home, PATH: cleanPath };
+
+    execFileSync(process.execPath, [distDg, "setup", "--yes", "--shell", "bash"], { env, stdio: "ignore" });
+    const uninstaller = join(home, ".dg", "uninstall.mjs");
+    expect(existsSync(uninstaller)).toBe(true);
+    expect(existsSync(join(home, ".dg", "shims", "npm"))).toBe(true);
+
+    execFileSync(process.execPath, [uninstaller, "--quiet"], { env, stdio: "ignore" });
+    expect(existsSync(join(home, ".dg"))).toBe(false);
+    expect((await readFile(join(home, ".bashrc"), "utf8")).includes(RC_BEGIN)).toBe(false);
+  });
+});
+
+describe("refreshSetupOnUpgrade", () => {
+  it("rewrites a stale pre-self-clean shim to the current self-cleaning template", async () => {
+    const home = await tempHome();
+    const shimDir = join(home, ".dg", "shims");
+    await mkdir(shimDir, { recursive: true });
+    const npmShim = join(shimDir, "npm");
+    await writeFile(npmShim, `#!/bin/sh\n# ${SHIM_SENTINEL}\nexec npm "$@"\n`, { mode: 0o755 });
+    await expect(readFile(npmShim, "utf8")).resolves.not.toContain("uninstall.mjs");
+
+    expect(refreshSetupOnUpgrade({ HOME: home })).toBe(true);
+
+    const refreshed = await readFile(npmShim, "utf8");
+    expect(refreshed).toContain('if [ -f "$dg_home/uninstall.mjs" ] && command -v node');
+    expect(isValidShimSource(refreshed, "npm")).toBe(true);
+  });
+
+  it("is a no-op when setup was never applied", async () => {
+    const home = await tempHome();
+    expect(refreshSetupOnUpgrade({ HOME: home })).toBe(false);
+    await expect(access(join(home, ".dg", "shims", "npm"))).rejects.toThrow();
+  });
+
+  it("never clobbers a non-dg file occupying a shim name", async () => {
+    const home = await tempHome();
+    const shimDir = join(home, ".dg", "shims");
+    await mkdir(shimDir, { recursive: true });
+    await writeFile(join(shimDir, "npm"), `#!/bin/sh\n# ${SHIM_SENTINEL}\nexec npm "$@"\n`, { mode: 0o755 });
+    const foreign = "#!/bin/sh\necho not-a-dg-shim\n";
+    await writeFile(join(shimDir, "yarn"), foreign, { mode: 0o755 });
+
+    expect(refreshSetupOnUpgrade({ HOME: home })).toBe(true);
+    await expect(readFile(join(shimDir, "yarn"), "utf8")).resolves.toBe(foreign);
   });
 });
 

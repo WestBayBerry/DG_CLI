@@ -1,10 +1,12 @@
-import { accessSync, constants, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { accessSync, constants, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, delimiter, dirname, join, resolve, sep } from "node:path";
 import { chmodSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
 import { homedir } from "node:os";
 import { createTheme, type Role, type Theme } from "../presentation/theme.js";
-import { reverseAgentHookEntry } from "../agents/registry.js";
+import { AGENTS, AGENT_IDS, agentLabel, resolveAgentHookContext, reverseAgentHookEntry } from "../agents/registry.js";
+import { GATE_ENABLE_HINT, readNetworkGatePosture } from "../agents/gate-posture.js";
 import {
   acquireLockSync,
   findStaleSessionsSync,
@@ -14,20 +16,21 @@ import {
   CLEANUP_REGISTRY_LOCK,
   type CleanupRegistry,
   type CleanupRegistryEntry,
+  type DgPathEnvironment,
   type DgPaths
 } from "../state/index.js";
 import { currentNodeVersion, isSupportedNode } from "../runtime/node-version.js";
 import { dgVersion } from "../commands/version.js";
 import { compareVersions, readLatestVersion } from "../commands/update.js";
 import { AuthError, authStatus, displayTier, readAuthState } from "../auth/store.js";
-import { ConfigError, loadUserConfig } from "../config/settings.js";
+import { ConfigError, DEFAULT_CONFIG, loadUserConfig } from "../config/settings.js";
 import { describeCooldownSettings } from "../policy/cooldown.js";
 import { resolveRealBinary } from "../launcher/resolve-real-binary.js";
 import { packageManagerNames } from "../launcher/classify.js";
 import { readServiceState } from "../service/state.js";
 import { OPTIONAL_SUPPORT_GATES } from "./optional-support.js";
 
-export const SHIM_COMMANDS = Object.freeze(["npm", "npx", "pnpm", "pnpx", "yarn", "pip", "pipx", "uv", "uvx", "cargo"]);
+export const SHIM_COMMANDS = Object.freeze(["npm", "npx", "pnpm", "pnpx", "yarn", "pip", "pip3", "pipx", "uv", "uvx", "cargo"]);
 export const SHIM_SENTINEL = "dg-shim-v1";
 export const RC_SENTINEL = "dg-shell-rc-v1";
 export const RC_FUNCTIONS_SENTINEL = "dg-shim-functions-v1";
@@ -54,8 +57,17 @@ export interface SetupPlan {
   readonly shell: Exclude<SetupShell, "auto">;
   readonly shimDir: string;
   readonly rcPath: string;
+  readonly failClosed: boolean;
   readonly writes: readonly PlannedWrite[];
   readonly reloadInstructions: readonly string[];
+}
+
+function readShimFailClosed(env: DgPathEnvironment): boolean {
+  try {
+    return loadUserConfig(env).policy.shimFailClosed;
+  } catch {
+    return false;
+  }
 }
 
 export interface PlannedWrite {
@@ -127,6 +139,7 @@ const DOCTOR_GROUP_BY_NAME: Record<string, DoctorGroup> = {
   "commit-guard": "setup",
   "stale-sessions": "setup",
   service: "setup",
+  "agent-gate": "setup",
   auth: "account",
   api: "account"
 };
@@ -182,6 +195,7 @@ export function buildSetupPlan(options: SetupOptions): SetupPlan {
     shell,
     shimDir,
     rcPath,
+    failClosed: readShimFailClosed(env),
     writes: [
       {
         kind: "directory",
@@ -230,13 +244,15 @@ export function applySetupPlan(plan: SetupPlan, now = new Date()): ApplySetupRes
 
   for (const command of SHIM_COMMANDS) {
     const path = join(plan.shimDir, command);
-    writeFileSync(path, shimSource(command), {
+    writeFileSync(path, shimSource(command, { failClosed: plan.failClosed }), {
       encoding: "utf8",
       mode: 0o755
     });
     chmodSync(path, 0o755);
     entries.push(cleanupEntry("shim", path, "mode1", now, SHIM_SENTINEL));
   }
+
+  installStandaloneUninstaller(plan.paths.homeDir);
 
   mkdirSync(dirname(plan.rcPath), {
     recursive: true,
@@ -267,6 +283,44 @@ export function applySetupPlanWithLock(plan: SetupPlan, now = new Date()): Apply
   } finally {
     lock.release();
   }
+}
+
+// Shims written by a dg that predates the self-cleaning template carry no
+// auto-cleanup, so a plain `npm uninstall -g` leaves them stranded forever.
+// Rewriting the installed shims and reinstalling the standalone uninstaller on
+// the first run after a version bump propagates the current template to setups
+// created by older releases.
+export function refreshSetupOnUpgrade(env: DgPathEnvironment = process.env): boolean {
+  const paths = resolveDgPaths(env);
+  const shimDir = join(paths.homeDir, ".dg", "shims");
+  if (!isShimFile(join(shimDir, "npm"))) {
+    return false;
+  }
+  const failClosed = readShimFailClosed(env);
+  try {
+    const lock = acquireLockSync(paths, SETUP_UNINSTALL_LOCK, {
+      staleMs: SETUP_UNINSTALL_LOCK_STALE_MS
+    });
+    try {
+      for (const command of SHIM_COMMANDS) {
+        const shimPath = join(shimDir, command);
+        if (!isShimFile(shimPath)) {
+          continue;
+        }
+        writeFileSync(shimPath, shimSource(command, { failClosed }), {
+          encoding: "utf8",
+          mode: 0o755
+        });
+        chmodSync(shimPath, 0o755);
+      }
+      installStandaloneUninstaller(paths.homeDir);
+    } finally {
+      lock.release();
+    }
+  } catch {
+    return false;
+  }
+  return true;
 }
 
 export function uninstallSetup(options: UninstallOptions): UninstallResult {
@@ -426,6 +480,7 @@ export function doctorReport(options: { readonly env?: NodeJS.ProcessEnv } = {})
   });
   checks.push(...unavailableDoctorChecks());
   checks.push(serviceCheck(env));
+  checks.push(agentGateCheck(env, paths.homeDir));
 
   return {
     version: dgVersion(),
@@ -737,10 +792,10 @@ function reloadInstructions(shell: Exclude<SetupShell, "auto">): readonly string
 // The baked absolute dg path stops a PATH-shadowing dg from hijacking the shim;
 // the fallbacks make it fail open — a removed or moved dg (uninstall, mid-upgrade)
 // runs the real manager instead of bricking it.
-export function shimSource(command: string): string {
+export function shimSource(command: string, options: { readonly failClosed?: boolean } = {}): string {
   const dg = escapeDoubleQuotedSh(dgEntrypoint());
   const nonce = '"${DG_SHIM_ACTIVE:+$DG_SHIM_ACTIVE,}' + `${command}:$$"`;
-  return [
+  const head = [
     "#!/bin/sh",
     `# ${SHIM_SENTINEL}`,
     `if [ -x "${dg}" ]; then`,
@@ -751,6 +806,27 @@ export function shimSource(command: string): string {
     `dg_bin=$(PATH="$dg_path" command -v dg 2>/dev/null)`,
     `if [ -n "$dg_bin" ]; then`,
     `  DG_SHIM_ACTIVE=${nonce} exec "$dg_bin" ${command} "$@"`,
+    "fi"
+  ];
+  // dg is gone from this machine. fail-closed (managed/CI) refuses the command
+  // so an unscanned install can't slip through; the operator removes the guard
+  // explicitly via `dg uninstall` while dg is present. fail-open (default)
+  // self-cleans dg's footprint and falls back to the real binary, because a
+  // plain `npm uninstall -g dg` cannot run cleanup and must not brick npm.
+  const failClosedTail = [
+    `echo "dg: install firewall required by policy (policy.shimFailClosed) but dg is unavailable; refusing to run ${command}" >&2`,
+    `echo "dg: reinstall dg, or run 'dg uninstall' while dg is present, to remove this guard" >&2`,
+    "exit 127",
+    ""
+  ];
+  const failOpenTail = [
+    `dg_home=$(dirname "$shim_dir")`,
+    `if [ -f "$dg_home/uninstall.mjs" ] && command -v node >/dev/null 2>&1; then`,
+    `  ( sleep 10`,
+    `    if [ ! -x "${dg}" ] && ! PATH="$dg_path" command -v dg >/dev/null 2>&1; then`,
+    `      node "$dg_home/uninstall.mjs" --quiet >/dev/null 2>&1`,
+    `    fi`,
+    `  ) >/dev/null 2>&1 &`,
     "fi",
     `real_bin=$(PATH="$dg_path" command -v ${command} 2>/dev/null)`,
     `if [ -n "$real_bin" ]; then`,
@@ -759,7 +835,8 @@ export function shimSource(command: string): string {
     `echo "dg: protection unavailable and no real ${command} found on PATH" >&2`,
     "exit 127",
     ""
-  ].join("\n");
+  ];
+  return [...head, ...(options.failClosed ? failClosedTail : failOpenTail)].join("\n");
 }
 
 function escapeDoubleQuotedSh(value: string): string {
@@ -773,6 +850,26 @@ function escapeDoubleQuotedFish(value: string): string {
 function dgEntrypoint(): string {
   const argv1 = process.argv[1];
   return argv1 ? resolve(argv1) : "dg";
+}
+
+function standaloneUninstallerSource(): string | undefined {
+  try {
+    return fileURLToPath(new URL("../standalone/uninstall.mjs", import.meta.url));
+  } catch {
+    return undefined;
+  }
+}
+
+function installStandaloneUninstaller(homeDir: string): void {
+  const source = standaloneUninstallerSource();
+  if (!source || !existsSync(source)) {
+    return;
+  }
+  const dgRoot = join(homeDir, ".dg");
+  mkdirSync(dgRoot, { recursive: true, mode: 0o700 });
+  const dest = join(dgRoot, "uninstall.mjs");
+  copyFileSync(source, dest);
+  chmodSync(dest, 0o600);
 }
 
 function withRcBlock(existing: string, plan: SetupPlan): string {
@@ -1016,7 +1113,19 @@ function configCheck(paths: DgPaths, env: NodeJS.ProcessEnv): RawDoctorCheck {
   }
   try {
     accessSync(paths.configDir, constants.R_OK);
-    loadUserConfig(env);
+    const config = loadUserConfig(env);
+    if (config.api.baseUrl !== DEFAULT_CONFIG.api.baseUrl) {
+      // The verdict API is the firewall's source of truth. A non-default
+      // endpoint is legitimate for enterprise self-host, but a silent repoint
+      // is also how an attacker would make every verdict come back clean, so
+      // surface it on the standard health check rather than trusting it quietly.
+      return {
+        name: "config",
+        status: "warn",
+        message: `dg is fetching verdicts from a non-default API endpoint: ${config.api.baseUrl} (default ${DEFAULT_CONFIG.api.baseUrl})`,
+        fix: `if you did not set this, your verdict source may be tampered — restore with: dg config set api.baseUrl ${DEFAULT_CONFIG.api.baseUrl}`
+      };
+    }
     return {
       name: "config",
       status: "pass",
@@ -1136,6 +1245,47 @@ function serviceCheck(env: NodeJS.ProcessEnv): RawDoctorCheck {
     name: "service",
     status: "pass",
     message: `Service mode is running at ${state.proxy.proxyUrl}; trust installed: ${state.trustInstalled ? "yes" : "no"}`
+  };
+}
+
+function hookedAgentLabels(env: NodeJS.ProcessEnv, home: string): string[] {
+  const labels: string[] = [];
+  for (const agent of AGENT_IDS) {
+    const integration = AGENTS[agent];
+    if (!integration.detect(home)) {
+      continue;
+    }
+    const ctx = resolveAgentHookContext(agent, { env, home });
+    const hooked = integration.verify(ctx).find((check) => check.name === integration.isInstalledCheckName)?.ok ?? false;
+    if (hooked) {
+      labels.push(agentLabel(agent));
+    }
+  }
+  return labels;
+}
+
+function agentGateCheck(env: NodeJS.ProcessEnv, home: string): RawDoctorCheck {
+  const hooked = hookedAgentLabels(env, home);
+  if (hooked.length === 0) {
+    return {
+      name: "agent-gate",
+      status: "unavailable",
+      message: "No AI agent has the dg install hook; run 'dg agents on' to protect agent-run installs"
+    };
+  }
+  const posture = readNetworkGatePosture(env);
+  if (posture.live) {
+    return {
+      name: "agent-gate",
+      status: "pass",
+      message: `${hooked.join(", ")} hooked; network gate live at ${posture.proxyUrl} (installs screened at fetch by artifact hash)`
+    };
+  }
+  return {
+    name: "agent-gate",
+    status: "warn",
+    message: `${hooked.join(", ")} hooked but the fetch-time network gate is OFF — static pre-screen only; absolute-path, manifest-only, dynamic, and unsupported-manager installs are NOT screened`,
+    fix: GATE_ENABLE_HINT
   };
 }
 
@@ -1338,9 +1488,8 @@ function scriptGateCheck(env: NodeJS.ProcessEnv): RawDoctorCheck {
     if (mode === "enforce") {
       return {
         name: "script-gate",
-        status: "warn",
-        message: "scriptGate.mode is enforce, but this dg release observes only — installs report script-running packages without blocking",
-        fix: "enforcement ships in an upcoming release; dg config set scriptGate.mode observe clears this warning"
+        status: "pass",
+        message: "Install-script gate enforces: protected npm/yarn installs run with --ignore-scripts so packages cannot run lifecycle scripts (pnpm blocks them natively)"
       };
     }
     return {

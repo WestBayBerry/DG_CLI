@@ -3,6 +3,17 @@ import { brotliDecompressSync, gunzipSync, inflateRawSync, inflateSync } from "n
 import type { OutgoingHttpHeaders } from "node:http";
 import type { PackageManagerClassification } from "../launcher/classify.js";
 
+// decodeURIComponent throws on malformed percent-encoding (e.g. a stray % in a
+// registry href); fall back to the raw value so one bad entry cannot throw out of
+// the whole metadata-extraction pass and drop every identity.
+function safeDecodeUriComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
 export type ArtifactIdentitySource = "registry-metadata" | "url-fallback";
 
 export interface ArtifactIdentity {
@@ -49,6 +60,10 @@ export function extractRegistryMetadataIdentities(
   ];
 }
 
+// A MITM'd registry can return a tiny gzip/brotli body that expands to gigabytes;
+// cap the decoded size so a decompression bomb cannot exhaust proxy memory.
+const MAX_METADATA_DECODED_BYTES = 32 * 1024 * 1024;
+
 // Content-Encoding lists encodings in the order they were applied; decode in
 // reverse. Any unknown token or decode failure returns the body untouched so
 // the response falls back to artifact handling instead of crashing the proxy.
@@ -58,18 +73,19 @@ function decodeContentEncoding(headers: OutgoingHttpHeaders, body: Buffer): Buff
     .split(",")
     .map((token) => token.trim().toLowerCase())
     .filter((token) => token.length > 0 && token !== "identity");
+  const cap = { maxOutputLength: MAX_METADATA_DECODED_BYTES };
   let decoded = body;
   for (const encoding of encodings.reverse()) {
     try {
       if (encoding === "gzip" || encoding === "x-gzip") {
-        decoded = gunzipSync(decoded);
+        decoded = gunzipSync(decoded, cap);
       } else if (encoding === "br") {
-        decoded = brotliDecompressSync(decoded);
+        decoded = brotliDecompressSync(decoded, cap);
       } else if (encoding === "deflate") {
         try {
-          decoded = inflateSync(decoded);
+          decoded = inflateSync(decoded, cap);
         } catch {
-          decoded = inflateRawSync(decoded);
+          decoded = inflateRawSync(decoded, cap);
         }
       } else {
         return body;
@@ -93,7 +109,8 @@ export function isRegistryIndexRequest(url: URL): boolean {
   return (
     isPypiSimpleIndexUrl(url) ||
     /\/pypi\/[^/]+\/json\/?$/i.test(url.pathname) ||
-    /\.metadata$/i.test(url.pathname) ||
+    // PEP 658 sidecar: only `<wheel|sdist>.metadata`, not any path ending .metadata
+    /\.(whl|tar\.gz|tgz|zip)\.metadata$/i.test(url.pathname) ||
     /^\/-\//.test(url.pathname)
   );
 }
@@ -136,7 +153,7 @@ function extractPypiSimpleIdentities(
     } catch {
       continue;
     }
-    const file = entry.filename ?? decodeURIComponent(absolute.pathname.split("/").filter(Boolean).at(-1) ?? "");
+    const file = entry.filename ?? safeDecodeUriComponent(absolute.pathname.split("/").filter(Boolean).at(-1) ?? "");
     const parsed = parsePypiArtifactFilename(file);
     if (!parsed) {
       continue;
@@ -285,7 +302,7 @@ function extractPypiIdentities(metadataUrl: URL, parsed: Record<string, unknown>
 function fallbackIdentity(artifactUrl: URL, classification: PackageManagerClassification): ArtifactIdentity {
   const ecosystem = ecosystemForManager(classification.manager);
   const parsed = ecosystem === "pypi"
-    ? parsePypiArtifactFilename(decodeURIComponent(artifactUrl.pathname.split("/").filter(Boolean).at(-1) ?? "")) ?? parsePackageVersionFromUrl(artifactUrl)
+    ? parsePypiArtifactFilename(safeDecodeUriComponent(artifactUrl.pathname.split("/").filter(Boolean).at(-1) ?? "")) ?? parsePackageVersionFromUrl(artifactUrl)
     : ecosystem === "cargo"
       ? parseCargoArtifactUrl(artifactUrl) ?? parsePackageVersionFromUrl(artifactUrl)
       : parsePackageVersionFromUrl(artifactUrl);
@@ -308,11 +325,11 @@ function parseCargoArtifactUrl(artifactUrl: URL): { readonly name: string; reado
   const downloadMatch = /^\/(?:api\/v1\/)?crates\/([^/]+)\/([^/]+)\/download\/?$/.exec(artifactUrl.pathname);
   if (downloadMatch && downloadMatch[1] && downloadMatch[2]) {
     return {
-      name: decodeURIComponent(downloadMatch[1]),
-      version: decodeURIComponent(downloadMatch[2])
+      name: safeDecodeUriComponent(downloadMatch[1]),
+      version: safeDecodeUriComponent(downloadMatch[2])
     };
   }
-  const file = decodeURIComponent(artifactUrl.pathname.split("/").filter(Boolean).at(-1) ?? "");
+  const file = safeDecodeUriComponent(artifactUrl.pathname.split("/").filter(Boolean).at(-1) ?? "");
   if (/\.crate$/i.test(file)) {
     const stem = file.slice(0, -".crate".length);
     const match = /^(.+)-(\d[0-9A-Za-z.+-]*)$/.exec(stem);
@@ -324,7 +341,7 @@ function parseCargoArtifactUrl(artifactUrl: URL): { readonly name: string; reado
 }
 
 function parsePackageVersionFromUrl(artifactUrl: URL): { readonly name: string; readonly version: string } {
-  const parts = artifactUrl.pathname.split("/").filter(Boolean).map((part) => decodeURIComponent(part));
+  const parts = artifactUrl.pathname.split("/").filter(Boolean).map((part) => safeDecodeUriComponent(part));
   const file = parts.at(-1) ?? artifactUrl.hostname;
   const npmPackage = npmPackageFromTarballPath(parts);
   const packageName = npmPackage ?? parts.at(-2) ?? file.replace(/\.(?:tgz|tar\.gz|zip|whl)$/i, "");
@@ -393,7 +410,7 @@ function parseNpmPackageSpec(spec: string): { readonly name: string; readonly ve
 }
 
 function packageNameFromNpmMetadataPath(metadataUrl: URL): string {
-  const parts = metadataUrl.pathname.split("/").filter(Boolean).map((part) => decodeURIComponent(part));
+  const parts = metadataUrl.pathname.split("/").filter(Boolean).map((part) => safeDecodeUriComponent(part));
   if (parts[0]?.startsWith("@") && parts[1]) {
     return `${parts[0]}/${parts[1]}`;
   }
@@ -401,7 +418,7 @@ function packageNameFromNpmMetadataPath(metadataUrl: URL): string {
 }
 
 function packageNameFromPypiMetadataPath(metadataUrl: URL): string {
-  const parts = metadataUrl.pathname.split("/").filter(Boolean).map((part) => decodeURIComponent(part));
+  const parts = metadataUrl.pathname.split("/").filter(Boolean).map((part) => safeDecodeUriComponent(part));
   const projectIndex = parts.findIndex((part) => part.toLowerCase() === "pypi");
   return parts[projectIndex + 1] ?? parts[0] ?? metadataUrl.hostname;
 }

@@ -42,11 +42,18 @@ for (const dependencyName of Object.keys(dependencies)) {
   }
 }
 
-for (const [dependencyName, range] of Object.entries(dependencies)) {
-  if (/^[~^<>=*]/.test(range)) {
-    throw new Error(`${dependencyName} must be exact-pinned, got ${range}`);
+// Require a whole-string exact semver, not just a missing leading range operator:
+// `1.2.x`, `1.x`, `1.2.3 || 4.0.0`, `file:`, `git:`, `http:`, and dist-tags all pass
+// a first-char check but let a malicious patch/minor auto-resolve into a security tool.
+function assertExactPins(deps, group) {
+  for (const [dependencyName, range] of Object.entries(deps)) {
+    if (typeof range !== "string" || !semverPattern.test(range)) {
+      throw new Error(`${group}.${dependencyName} must be an exact semver version, got ${JSON.stringify(range)}`);
+    }
   }
 }
+assertExactPins(dependencies, "dependencies");
+assertExactPins(packageJson.devDependencies ?? {}, "devDependencies");
 
 const files = packageJson.files ?? [];
 const expectedFiles = ["dist", "LICENSE", "package.json", "npm-shrinkwrap.json"];

@@ -22,7 +22,7 @@ describe("copilot-cli integration", () => {
   });
 
   function ctx() {
-    return resolveAgentHookContext("copilot-cli", { env: { HOME: home }, home, dgCommand: "/abs/dg hook-exec copilot-cli" });
+    return resolveAgentHookContext("copilot-cli", { env: { HOME: home }, home, dgCommand: `${process.execPath} hook-exec copilot-cli` });
   }
 
   it("parses toolArgs as an object and as a JSON string (double-parse quirk)", () => {

@@ -139,7 +139,11 @@ export function emptyFilterMessage(
 }
 
 function csvCell(value: string): string {
-  return /[",\n\r]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+  // Neutralize spreadsheet formula injection: a cell starting with = + - @ (or
+  // tab/CR) is interpreted as a formula by Excel/Sheets, letting an attacker-named
+  // dependency run on open. Prefix a sentinel apostrophe so it is treated as text.
+  const guarded = /^[=+\-@\t\r]/.test(value) ? `'${value}` : value;
+  return /[",\n\r]/.test(guarded) ? `"${guarded.replace(/"/g, '""')}"` : guarded;
 }
 
 export function componentsCsv(rows: readonly SbomRow[]): string {

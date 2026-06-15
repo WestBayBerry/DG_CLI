@@ -103,12 +103,16 @@ async function recordHookEntry(ctx: AgentHookContext, legacySentinels: readonly 
   for (const sentinel of legacySentinels) {
     await removeCleanupEntry(ctx.paths, { kind: "agent-hook", path: ctx.settingsPath, sentinel });
   }
+  // Preserve the dg-created provenance on re-apply: `created` is false the second
+  // time the hook is installed, but if dg created the file originally, uninstall
+  // must still remove it, so keep the marker.
+  const dgCreated = created || (await wasCreatedByDg(ctx));
   await recordCleanupEntry(ctx.paths, {
     kind: "agent-hook",
     path: ctx.settingsPath,
     mode: "mode1",
     sentinel: agentHookSentinel(ctx.agent),
-    ...(created ? { original: "dg-created" } : {}),
+    ...(dgCreated ? { original: "dg-created" } : {}),
   });
 }
 
@@ -117,6 +121,51 @@ async function removeHookEntries(ctx: AgentHookContext, legacySentinels: readonl
   for (const sentinel of legacySentinels) {
     await removeCleanupEntry(ctx.paths, { kind: "agent-hook", path: ctx.settingsPath, sentinel });
   }
+}
+
+function findHookCommand(node: unknown, signature: string): string | null {
+  if (typeof node === "string") {
+    return node.includes(signature) ? node : null;
+  }
+  if (Array.isArray(node)) {
+    for (const value of node) {
+      const found = findHookCommand(value, signature);
+      if (found) {
+        return found;
+      }
+    }
+    return null;
+  }
+  if (node && typeof node === "object") {
+    for (const value of Object.values(node)) {
+      const found = findHookCommand(value, signature);
+      if (found) {
+        return found;
+      }
+    }
+    return null;
+  }
+  return null;
+}
+
+function hookResolvesCheck(settings: Json, agent: string): AgentHookCheck | null {
+  const command = findHookCommand(settings, `hook-exec ${agent}`);
+  if (!command) {
+    return null;
+  }
+  const head = command.split(/\s+hook-exec\s+/)[0] ?? command;
+  const broken = head
+    .split(/\s+/)
+    .filter((token) => token.startsWith("/"))
+    .filter((token) => !existsSync(token));
+  return {
+    name: "hook command resolves",
+    ok: broken.length === 0,
+    detail:
+      broken.length === 0
+        ? "dg path in the hook resolves"
+        : `hook references a missing path (${broken.join(", ")}); re-run 'dg agents on ${agent}'`,
+  };
 }
 
 export interface MergedJsonHookConfig {
@@ -168,13 +217,21 @@ export function mergedJsonHook(config: MergedJsonHookConfig): HookPersistence {
       if (!present) {
         return checks;
       }
+      let settings: Json | null = null;
       let installed = false;
       try {
-        installed = config.isInstalled(readSettings(ctx.settingsPath).settings);
+        settings = readSettings(ctx.settingsPath).settings;
+        installed = config.isInstalled(settings);
       } catch {
         installed = false;
       }
       checks.push({ name: config.checkName, ok: installed, detail: installed ? "installed" : "not installed" });
+      if (installed && settings) {
+        const resolves = hookResolvesCheck(settings, ctx.agent);
+        if (resolves) {
+          checks.push(resolves);
+        }
+      }
       return checks;
     },
     reverseEntry(entry: CleanupRegistryEntry, removed: string[], missing: string[], warnings: string[]): void {
@@ -261,6 +318,17 @@ export function ownedJsonHook(config: OwnedJsonHookConfig): HookPersistence {
       }
       const installed = ownsFile(ctx.settingsPath);
       checks.push({ name: config.checkName, ok: installed, detail: installed ? "installed" : "present but not dg-owned" });
+      if (installed) {
+        try {
+          const settings = JSON.parse(readFileSync(ctx.settingsPath, "utf8")) as Json;
+          const resolves = hookResolvesCheck(settings, ctx.agent);
+          if (resolves) {
+            checks.push(resolves);
+          }
+        } catch {
+          // unreadable file: the installed check already reflects the broken state
+        }
+      }
       return checks;
     },
     reverseEntry(entry: CleanupRegistryEntry, removed: string[], missing: string[], warnings: string[]): void {

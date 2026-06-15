@@ -43,7 +43,7 @@ export async function maybeAgentHookExec(
       result: {
         exitCode: 2,
         stdout: "",
-        stderr: `dg hook-exec: unknown agent '${agent ?? ""}' — blocked under the firewall; update dg (npm i -g @westbayberry/dg) or run 'dg agents off'\n`
+        stderr: `dg hook-exec: unknown agent '${agent ?? ""}' — blocked under the firewall; update dg (npm i -g @westbayberry/dg)\n`
       }
     };
   }

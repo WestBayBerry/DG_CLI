@@ -7,7 +7,7 @@ import { defaultPromptIo } from "../install-ui/prompt.js";
 import { normalizePypiName } from "../policy/pypi-name.js";
 import { resolveAcceptedBy } from "../project/dgfile.js";
 import { enforceProtectedInstall, type ForceOverrideRequest } from "../proxy/enforcement.js";
-import { classifyPackageManagerInvocation, isSupportedPackageManager, type PackageManager } from "./classify.js";
+import { classifyPackageManagerInvocation, isSupportedPackageManager, normalizeManagerName, type PackageManager } from "./classify.js";
 import {
   actionRank,
   promptPreflightYesNo,
@@ -64,8 +64,9 @@ export async function maybePreflightInstallPrompt(
     return FALL_THROUGH;
   }
 
-  const [manager, ...rest] = args;
-  if (!manager || !isSupportedPackageManager(manager as PackageManager)) {
+  const [rawManager, ...rest] = args;
+  const manager = normalizeManagerName(rawManager ?? "") as PackageManager;
+  if (!rawManager || !isSupportedPackageManager(manager)) {
     return FALL_THROUGH;
   }
   const ecosystem = ECOSYSTEM_BY_MANAGER[manager as PackageManager];

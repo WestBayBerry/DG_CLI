@@ -16,7 +16,7 @@ import { connect as tlsConnect } from "node:tls";
 import { describe, expect, it } from "vitest";
 import forge from "node-forge";
 import { classifyPackageManagerInvocation } from "../../src/launcher/classify.js";
-import { readProxySessionState, startProductionHttpProxy } from "../../src/proxy/server.js";
+import { readProxySessionState, startProductionHttpProxy, upstreamTlsOptions } from "../../src/proxy/server.js";
 import { writePreverifiedFile, type PreverifiedEntry } from "../../src/proxy/preverified.js";
 import { cleanupSessionSync, createSessionSync, readHeldPackages, resolveDgPaths } from "../../src/state/index.js";
 
@@ -764,11 +764,19 @@ describe("production proxy preverified install set", () => {
 
   it("short-circuits under an active cooldown when the preflight already evaluated it", async () => {
     const result = await runPreverifiedScenario({
-      entry: { action: "pass", cooldownEvaluated: true },
+      entry: { action: "pass", cooldownEvaluated: true, scannedSha256: WHEEL_SHA },
       env: { DG_COOLDOWN_AGE: "24h" }
     });
     expect(result.statusCode).toBe(200);
     expect(result.apiCalls).toBe(0);
+  });
+
+  it("re-scans the streamed bytes for a preverified pass that carries no scanned SHA (TOCTOU defense, H9)", async () => {
+    const result = await runPreverifiedScenario({ entry: { action: "pass" } });
+    expect(result.statusCode).toBe(200);
+    // No byte fingerprint to cross-check, so the proxy must call the API to scan
+    // the actual streamed bytes instead of trusting the name@version verdict.
+    expect(result.apiCalls).toBe(1);
   });
 
   it("never trusts a preverified entry for a url-fallback identity", async () => {
@@ -845,7 +853,7 @@ describe("production proxy cooldown wiring", () => {
       expect(response.body.toString("utf8")).not.toContain(artifact.toString("utf8"));
       expect(response.body.toString("utf8")).toContain("holds: dg cooldown");
       expect(seenBodies).toHaveLength(1);
-      expect(seenBodies[0]?.cooldown).toEqual({ minAgeDays: 1, onUnknown: "allow" });
+      expect(seenBodies[0]?.cooldown).toEqual({ minAgeDays: 1, onUnknown: "block" });
       expect(state.decisions[0]).toMatchObject({
         action: "block",
         cause: "cooldown",
@@ -1001,7 +1009,7 @@ describe("production proxy cooldown wiring", () => {
     try {
       await requestViaHttpProxy(handle, `${registry.url}/left-pad/-/left-pad-1.3.0.tgz`);
       expect(seenBodies).toHaveLength(1);
-      expect(seenBodies[0]?.cooldown).toEqual({ minAgeDays: 1, onUnknown: "allow" });
+      expect(seenBodies[0]?.cooldown).toEqual({ minAgeDays: 1, onUnknown: "block" });
     } finally {
       await handle.close();
       await api.close();
@@ -1133,6 +1141,42 @@ describe("production proxy TLS routing", () => {
         force: true,
         recursive: true
       });
+    }
+  }, 20_000);
+
+  it("refuses a CONNECT to an un-screened host under policy.strictEgress instead of blind-tunneling (H7)", async () => {
+    const temp = await mkdtemp(join(tmpdir(), "dg-proxy-strict-"));
+    const certs = await writeTestTlsMaterial(temp, "localhost");
+    const origin = await startHttpsOrigin(certs, Buffer.from("unscreened artifact", "utf8"));
+    await mkdir(join(temp, ".dg"), { recursive: true });
+    await writeFile(join(temp, ".dg", "config.json"), JSON.stringify({ policy: { strictEgress: true } }), "utf8");
+    const session = createSessionSync(resolveDgPaths({ HOME: temp }));
+    const handle = await startProductionHttpProxy({
+      session,
+      apiBaseUrl: "http://127.0.0.1:9",
+      classification: classifyPackageManagerInvocation("npm", ["install", "left-pad"]),
+      env: { HOME: temp, DG_PROXY_MITM_HOSTS: "registry.npmjs.org" }
+    });
+
+    try {
+      await expect(
+        requestViaConnect({
+          ca: certs.caCertPem,
+          path: "/blind.tgz",
+          proxyPort: handle.port,
+          proxyAuthorization: handle.proxyAuthorization,
+          targetHost: "localhost",
+          targetPort: origin.port
+        })
+      ).rejects.toThrow(/403/);
+      const state = readProxySessionState(session);
+      expect(state.decisions[0]).toMatchObject({ action: "block", cause: "policy" });
+      expect(state.decisions[0]?.reason).toContain("strict egress");
+    } finally {
+      await handle.close();
+      await origin.close();
+      cleanupSessionSync(session);
+      await rm(temp, { force: true, recursive: true });
     }
   }, 20_000);
 
@@ -2031,3 +2075,38 @@ function decodeChunkedBody(body: Buffer): Buffer {
   }
   return Buffer.concat(chunks);
 }
+
+describe("upstreamTlsOptions (H6: ambient CA must not be trusted upstream)", () => {
+  it("ignores ambient NODE_EXTRA_CA_CERTS so it cannot MITM the real registry", () => {
+    expect(upstreamTlsOptions({ NODE_EXTRA_CA_CERTS: "/tmp/attacker-ca.pem" } as NodeJS.ProcessEnv)).toEqual({});
+  });
+
+  it("returns no extra CA when neither knob is set", () => {
+    expect(upstreamTlsOptions({} as NodeJS.ProcessEnv)).toEqual({});
+  });
+
+  it("honors the explicit DG_UPSTREAM_CA_CERT knob", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "dg-upstream-ca-"));
+    const caPath = join(dir, "ca.pem");
+    await writeFile(caPath, "-----BEGIN CERTIFICATE-----\nFAKE\n-----END CERTIFICATE-----\n", "utf8");
+    try {
+      const opts = upstreamTlsOptions({ DG_UPSTREAM_CA_CERT: caPath } as NodeJS.ProcessEnv);
+      expect(opts.ca).toBeDefined();
+      expect(opts.ca?.some((c) => c.includes("FAKE"))).toBe(true);
+    } finally {
+      await rm(dir, { force: true, recursive: true });
+    }
+  });
+
+  it("DG_UPSTREAM_CA_CERT wins even when NODE_EXTRA_CA_CERTS is also set", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "dg-upstream-ca-"));
+    const caPath = join(dir, "ca.pem");
+    await writeFile(caPath, "-----BEGIN CERTIFICATE-----\nTRUSTED\n-----END CERTIFICATE-----\n", "utf8");
+    try {
+      const opts = upstreamTlsOptions({ DG_UPSTREAM_CA_CERT: caPath, NODE_EXTRA_CA_CERTS: "/tmp/attacker-ca.pem" } as NodeJS.ProcessEnv);
+      expect(opts.ca?.some((c) => c.includes("TRUSTED"))).toBe(true);
+    } finally {
+      await rm(dir, { force: true, recursive: true });
+    }
+  });
+});

@@ -43,9 +43,9 @@ describe("cargo exemption name normalization", () => {
 });
 
 describe("cooldown config keys", () => {
-  it("ships on by default at 24h with fail-open unknowns", () => {
+  it("ships on by default at 24h with fail-closed unknowns", () => {
     expect(DEFAULT_CONFIG.cooldown.age).toBe("24h");
-    expect(DEFAULT_CONFIG.cooldown.onUnknown).toBe("allow");
+    expect(DEFAULT_CONFIG.cooldown.onUnknown).toBe("block");
     expect(DEFAULT_CONFIG.cooldown.npmAge).toBe("");
     expect(DEFAULT_CONFIG.cooldown.pypiAge).toBe("");
     expect(DEFAULT_CONFIG.cooldown.cargoAge).toBe("");
@@ -127,7 +127,7 @@ describe("cooldown config file round-trip", () => {
     await writeFile(join(home, ".dg", "config.json"), JSON.stringify({ policy: { mode: "block" } }), "utf8");
     const config = loadUserConfig({ HOME: home });
     expect(config.cooldown.age).toBe("24h");
-    expect(config.cooldown.onUnknown).toBe("allow");
+    expect(config.cooldown.onUnknown).toBe("block");
   });
 });
 
@@ -155,12 +155,12 @@ describe("effective cooldown resolution", () => {
   });
 
   it("builds the request param only when the window is positive and the package is not exempt", () => {
-    expect(cooldownRequestParam(DEFAULT_CONFIG, {}, "npm", "left-pad")).toEqual({ minAgeDays: 1, onUnknown: "allow" });
+    expect(cooldownRequestParam(DEFAULT_CONFIG, {}, "npm", "left-pad")).toEqual({ minAgeDays: 1, onUnknown: "block" });
     const off = setConfigValue(DEFAULT_CONFIG, "cooldown.age", "0");
     expect(cooldownRequestParam(off, {}, "npm", "left-pad")).toBeUndefined();
     const exempted = setConfigValue(DEFAULT_CONFIG, "cooldown.exempt", "left-pad");
     expect(cooldownRequestParam(exempted, {}, "npm", "left-pad")).toBeUndefined();
-    expect(cooldownRequestParam(exempted, {}, "npm", "right-pad")).toEqual({ minAgeDays: 1, onUnknown: "allow" });
+    expect(cooldownRequestParam(exempted, {}, "npm", "right-pad")).toEqual({ minAgeDays: 1, onUnknown: "block" });
     expect(cooldownRequestParam(DEFAULT_CONFIG, { DG_COOLDOWN_AGE: "0" }, "npm", "left-pad")).toBeUndefined();
   });
 

@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import type { AgentVerdict } from "../launcher/agent-check.js";
+import { formatScreenedNote, type AgentVerdict } from "../launcher/agent-check.js";
 import type { AgentIntegration, EmittedDecision, ParsedHookInput, ProbeResult } from "./types.js";
 import { dirExists, mergedJsonHook, readSettings, type Json } from "./persistence.js";
 
@@ -84,7 +84,11 @@ function parseInput(stdin: string): ParsedHookInput | null {
 
 function emitDecision(verdict: AgentVerdict): EmittedDecision {
   if (verdict.decision === "allow") {
-    return { stdout: JSON.stringify({ permission: "allow" }), exitCode: 0 };
+    const note = verdict.screened ? formatScreenedNote(verdict.screened) : "";
+    return {
+      stdout: JSON.stringify(note ? { permission: "allow", agent_message: note } : { permission: "allow" }),
+      exitCode: 0,
+    };
   }
   const reason = verdict.reason ?? "Dependency Guardian firewall";
   return {

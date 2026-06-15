@@ -38,6 +38,17 @@ describe("enforceProtectedInstall never throws on corrupt local state", () => {
     expect(decision.cause).toBe("malware");
   });
 
+  it("fails closed (block) when no proxy verdict is supplied (B3-L7)", async () => {
+    const home = await tempHome();
+    const decision = enforceProtectedInstall({
+      classification: classifyPackageManagerInvocation("npm", ["install", "left-pad"]),
+      env: { HOME: home }
+      // no proxyVerdict — the per-invocation proxy could not produce one
+    });
+    expect(decision.action).toBe("block");
+    expect(decision.cause).toBe("proxy-setup-failure");
+  });
+
   it("keeps a pass verdict passing when config.json is malformed", async () => {
     const home = await tempHome();
     await mkdir(join(home, ".dg"), { recursive: true });

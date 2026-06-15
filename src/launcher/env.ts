@@ -27,18 +27,52 @@ function clientReadTimeoutSeconds(env: NodeJS.ProcessEnv): number {
   return Math.ceil(verdictSeconds + 60);
 }
 
+// The wrapped package manager and every lifecycle/postinstall script it runs are
+// untrusted. The dg account credential must never reach them; only the trusted
+// proxy worker (which makes the authenticated API calls) keeps it. Applied on
+// EVERY spawn path, not just the proxy one.
+export function scrubChildSecrets(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  delete env.DG_API_KEY;
+  delete env.DG_API_TOKEN;
+  return env;
+}
+
+// The union of proxy-routing vars for an AGENT environment. Unlike a single
+// wrapped install, an agent runs arbitrary package managers, so every manager's
+// proxy + CA var is set at once (npm/node, pip, uv, cargo), plus DG_PROXY_ACTIVE
+// so the install-hook pre-screen defers statically-undecidable commands to the
+// proxy. Every value is a literal (the proxy URL, the CA path) — no shell
+// expansion — so it is safe to drop into an agent's settings `env` block.
+export function buildAgentRoutingEnv(proxyUrl: string, caPath: string): Record<string, string> {
+  const authToken = readProxyAuthToken(dirname(caPath));
+  const url = authToken ? proxyUrlWithAuth(proxyUrl, authToken) : proxyUrl;
+  const noProxy = "127.0.0.1,localhost";
+  return {
+    DG_PROXY_ACTIVE: "1",
+    NO_PROXY: noProxy,
+    no_proxy: noProxy,
+    HTTP_PROXY: url,
+    HTTPS_PROXY: url,
+    http_proxy: url,
+    https_proxy: url,
+    ALL_PROXY: url,
+    npm_config_proxy: url,
+    npm_config_https_proxy: url,
+    NODE_EXTRA_CA_CERTS: caPath,
+    REQUESTS_CA_BUNDLE: caPath,
+    PIP_CERT: caPath,
+    SSL_CERT_FILE: caPath,
+    CARGO_HTTP_CAINFO: caPath,
+  };
+}
+
 export function buildProxyChildEnv(options: ProxyEnvironmentOptions): NodeJS.ProcessEnv {
   const authToken = readProxyAuthToken(dirname(options.caBundlePath));
   const proxyUrl = authToken ? proxyUrlWithAuth(options.proxyUrl, authToken) : options.proxyUrl;
-  const env: NodeJS.ProcessEnv = {
+  const env: NodeJS.ProcessEnv = scrubChildSecrets({
     ...options.baseEnv,
     DG_PROXY_ACTIVE: "1"
-  };
-  // The wrapped package manager and every lifecycle/postinstall script it runs
-  // are untrusted. The dg account credential must never reach them; only the
-  // trusted proxy worker (which makes the authenticated API calls) keeps it.
-  delete env.DG_API_KEY;
-  delete env.DG_API_TOKEN;
+  });
   // dg fully controls NO_PROXY (loopback only). An inherited NO_PROXY that names
   // the registry (or a `*`/`.org` glob) would route the manager straight past the
   // firewall, so the inherited value is dropped, not merged.

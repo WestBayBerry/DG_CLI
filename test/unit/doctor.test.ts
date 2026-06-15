@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { dgVersion } from "../../src/commands/version.js";
 import { applyGitHook, resolveGitRepo, type GitRepoContext } from "../../src/setup/git-hook.js";
 import { doctorReport, doctorReportWithRemote, shimSource } from "../../src/setup/plan.js";
+import { runAgentsCommand } from "../../src/commands/agents.js";
 
 const made: string[] = [];
 let previousLatest: string | undefined;
@@ -247,13 +248,54 @@ describe("doctor script-gate state", () => {
     expect(check?.message).toContain("Install-script gate is off");
   });
 
-  it("warns when enforce is configured because this release observes only", () => {
+  it("reports enforce as actively gating install scripts", () => {
     const home = tempDir("dg-doctor-home-");
     writeDoctorConfig(home, { scriptGate: { mode: "enforce" } });
 
     const check = doctorReport({ env: baseEnv(home) }).checks.find((candidate) => candidate.name === "script-gate");
+    expect(check?.status).toBe("pass");
+    expect(check?.message).toContain("enforces");
+    expect(check?.message).toContain("--ignore-scripts");
+  });
+
+  it("warns when api.baseUrl has been repointed away from the default verdict source", () => {
+    const home = tempDir("dg-doctor-home-");
+    writeDoctorConfig(home, { api: { baseUrl: "https://evil.example.com" } });
+
+    const check = doctorReport({ env: baseEnv(home) }).checks.find((candidate) => candidate.name === "config");
     expect(check?.status).toBe("warn");
-    expect(check?.message).toContain("observes only");
-    expect(check?.fix).toContain("scriptGate.mode observe");
+    expect(check?.message).toContain("non-default API endpoint");
+    expect(check?.message).toContain("evil.example.com");
+  });
+
+  it("keeps config as pass on the default api.baseUrl", () => {
+    const home = tempDir("dg-doctor-home-");
+    writeDoctorConfig(home, { scriptGate: { mode: "off" } });
+
+    const check = doctorReport({ env: baseEnv(home) }).checks.find((candidate) => candidate.name === "config");
+    expect(check?.status).toBe("pass");
+  });
+});
+
+describe("doctor agent-gate posture", () => {
+  it("is gated/unavailable when no agent carries the dg hook", () => {
+    const check = doctorReport({ env: baseEnv(tempDir("dg-doctor-home-")) }).checks.find(
+      (candidate) => candidate.name === "agent-gate"
+    );
+    expect(check?.status).toBe("unavailable");
+    expect(check?.group).toBe("gated");
+  });
+
+  it("warns loudly when an agent is hooked but the network gate is off", async () => {
+    const home = tempDir("dg-doctor-home-");
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    const env = baseEnv(home);
+    await runAgentsCommand(["on", "claude-code"], env, home);
+
+    const check = doctorReport({ env }).checks.find((candidate) => candidate.name === "agent-gate");
+    expect(check?.status).toBe("warn");
+    expect(check?.message).toContain("Claude Code");
+    expect(check?.message).toContain("network gate is OFF");
+    expect(check?.fix).toContain("dg service start");
   });
 });

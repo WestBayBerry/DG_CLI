@@ -9,6 +9,8 @@ import {
   resolveAgentHookContext,
 } from "../agents/registry.js";
 import { AgentHookError } from "../agents/persistence.js";
+import { applyAgentRouting, removeAgentRouting, resolveServiceRoutingEnv, routingInstalled } from "../agents/routing.js";
+import { GATE_ENABLE_HINT, GATE_OFF_COVERAGE_GAPS, readNetworkGatePosture } from "../agents/gate-posture.js";
 import type { AgentId } from "../agents/types.js";
 import { resolvePresentation } from "../presentation/mode.js";
 import { createTheme, type Theme } from "../presentation/theme.js";
@@ -129,6 +131,24 @@ function renderStatusCard(rows: readonly AgentRow[], theme: Theme): string {
   return lines.join("\n");
 }
 
+function gatePostureLines(env: NodeJS.ProcessEnv, theme: Theme): string[] {
+  const accent = (text: string): string => theme.paint("accent", text);
+  const muted = (text: string): string => theme.paint("muted", text);
+  const posture = readNetworkGatePosture(env);
+  if (posture.live) {
+    return [`  ${theme.paint("pass", "✓ network gate live")} ${muted(`at ${posture.proxyUrl} — installs are screened at fetch by artifact hash, however the command is written`)}`];
+  }
+  const lines = [
+    `  ${theme.paint("warn", "⚠ network gate OFF — static pre-screen only")}`,
+    `  ${muted("these are NOT screened until the gate is on:")}`,
+  ];
+  for (const gap of GATE_OFF_COVERAGE_GAPS) {
+    lines.push(`    ${muted(`· ${gap}`)}`);
+  }
+  lines.push(`  ${muted("enable full fetch-time screening:")} ${accent(GATE_ENABLE_HINT)}`);
+  return lines;
+}
+
 async function applyAgents(targets: readonly AgentId[], env: NodeJS.ProcessEnv, home: string, theme: Theme, recordFixture: boolean): Promise<CommandResult> {
   const accent = (text: string): string => theme.paint("accent", text);
   const muted = (text: string): string => theme.paint("muted", text);
@@ -147,6 +167,18 @@ async function applyAgents(targets: readonly AgentId[], env: NodeJS.ProcessEnv, 
     try {
       await integration.apply({ ...ctx, dgCommand });
       lines.push(`  ${theme.paint("pass", `✓ ${integration.label} installs route through dg`)} ${muted(`(${tildify(ctx.settingsPath, home)})`)}`);
+      // When the persistent proxy is live, also route the agent's real fetches
+      // through it so a wrapped/dynamic install the static hook can't decode is
+      // still screened at fetch time.
+      const routing = resolveServiceRoutingEnv(env);
+      if (!("error" in routing)) {
+        const r = applyAgentRouting(agent, routing.env, home, env);
+        lines.push(
+          r.applied
+            ? `  ${muted("  ↳ fetches also routed through the live dg proxy (fetch-time screening)")}`
+            : `  ${muted(`  ↳ routing skipped: ${r.detail}`)}`,
+        );
+      }
       if (integration.maturity === "unverified") {
         lines.push(`  ${muted(`  hook installed from ${integration.label}'s documented schema; payload format not yet verified against a live ${integration.label} run`)}`);
       }
@@ -162,7 +194,7 @@ async function applyAgents(targets: readonly AgentId[], env: NodeJS.ProcessEnv, 
   if (lines.length === 0) {
     return { exitCode: 0, stdout: `  ${muted("No unprotected agents detected.")} ${muted("See")} ${accent("dg agents")}\n`, stderr: "" };
   }
-  lines.push(`  ${muted("Reverse:")} ${accent("dg agents off")}`);
+  lines.push("", ...gatePostureLines(env, theme), "", `  ${muted("Reverse:")} ${accent("dg agents off")}`);
   return { exitCode: failures > 0 && failures === targets.length ? 1 : 0, stdout: `${lines.join("\n")}\n`, stderr: "" };
 }
 
@@ -174,6 +206,7 @@ async function removeAgents(targets: readonly AgentId[], env: NodeJS.ProcessEnv,
     const ctx = resolveAgentHookContext(agent, { env, home });
     try {
       const result = await integration.remove(ctx);
+      removeAgentRouting(agent, home, env);
       lines.push(
         result.removed
           ? `  ${theme.paint("pass", `✓ ${integration.label} hook removed`)} ${muted(`(${tildify(ctx.settingsPath, home)})`)}`
@@ -201,6 +234,19 @@ function checkAgents(targets: readonly AgentId[], env: NodeJS.ProcessEnv, home: 
       lines.push(`  ${check.ok ? "✓" : "✗"} ${check.name}: ${check.detail}`);
       allOk = allOk && check.ok;
     }
+    const routed = routingInstalled(agent, home, env);
+    lines.push(`  ${routed ? "✓" : "·"} fetch-time routing: ${routed ? "installs routed through the dg proxy" : "not routed (start dg service, then re-run dg agents on)"}`);
+  }
+  const posture = readNetworkGatePosture(env);
+  lines.push("", "network gate:");
+  if (posture.live) {
+    lines.push(`  ✓ live at ${posture.proxyUrl} — installs screened at fetch by artifact hash, however the command is written`);
+  } else {
+    lines.push("  ⚠ OFF — static pre-screen only. NOT screened until the gate is on:");
+    for (const gap of GATE_OFF_COVERAGE_GAPS) {
+      lines.push(`    · ${gap}`);
+    }
+    lines.push(`  enable: ${GATE_ENABLE_HINT}`);
   }
   return { exitCode: allOk ? 0 : 1, stdout: `${lines.join("\n")}\n`, stderr: "" };
 }

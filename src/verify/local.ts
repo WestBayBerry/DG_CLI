@@ -135,7 +135,7 @@ function scanTarball(bytes: Buffer, path: string): ArchiveScan {
   let tarBytes = bytes;
   if (path.endsWith(".tgz") || path.endsWith(".tar.gz")) {
     try {
-      tarBytes = gunzipSync(bytes);
+      tarBytes = gunzipSync(bytes, { maxOutputLength: MAX_UNPACKED_BYTES });
     } catch (error) {
       return archiveError(`could not decompress tarball: ${error instanceof Error ? error.message : "unknown gzip error"}`);
     }
@@ -456,7 +456,7 @@ function readZipBody(data: Buffer, method: number, name: string, errors: string[
   }
   if (method === 8) {
     try {
-      return inflateRawSync(data);
+      return inflateRawSync(data, { maxOutputLength: MAX_UNPACKED_BYTES });
     } catch (error) {
       errors.push(`${name}: could not inflate zip entry: ${error instanceof Error ? error.message : "unknown inflate error"}`);
       return Buffer.alloc(0);

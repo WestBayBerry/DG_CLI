@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { analyzePackages, type AnalyzeCooldownParam, type ScannerAction, type ScannerPackageResult } from "../api/analyze.js";
-import { loadUserConfig } from "../config/settings.js";
+import { DEFAULT_CONFIG, loadUserConfig, trustsProjectOverrides } from "../config/settings.js";
+import { honoredOverrides } from "../project/override-trust.js";
 import { matchDecision, packageKey } from "../decisions/apply.js";
 import { offerRememberOnIo, type RememberPackage } from "../decisions/remember-prompt.js";
 import { provenanceDowngradeLine } from "../presentation/provenance.js";
@@ -34,13 +35,16 @@ export interface PreflightCooldownContext {
 }
 
 export function resolvePreflightCooldown(env: NodeJS.ProcessEnv, ecosystem: CooldownEcosystem): PreflightCooldownContext | undefined {
+  // A corrupt user config must not silently disable the cooldown gate; fall back
+  // to defaults so any env-configured cooldown is still applied.
+  let config;
   try {
-    const config = loadUserConfig(env);
-    const param = cooldownRequestParam(config, env, ecosystem, "");
-    return param ? { param, exempt: config.cooldown.exempt, ecosystem } : undefined;
+    config = loadUserConfig(env);
   } catch {
-    return undefined;
+    config = DEFAULT_CONFIG;
   }
+  const param = cooldownRequestParam(config, env, ecosystem, "");
+  return param ? { param, exempt: config.cooldown.exempt, ecosystem } : undefined;
 }
 
 function isQuarantined(
@@ -89,7 +93,14 @@ export function resolvePreflightDecisions(
   if (!file.readable) {
     return null;
   }
-  return { root, file, ecosystem, env };
+  const honored = honoredOverrides(file, root, env, trustsProjectOverrides(env));
+  if (honored.droppedExemptions > 0 || honored.droppedDecisions > 0) {
+    process.stderr.write(
+      `dg: ignoring ${honored.droppedExemptions} cooldown exemption(s) and ${honored.droppedDecisions} decision(s) in ${file.path} not authored on this machine — re-add with 'dg cooldown add' / 'dg decisions', or 'dg config set policy.trustProjectAllowlists true' to trust this repo\n`,
+    );
+  }
+  const gatedFile: DgFile = { ...file, cooldownExemptions: honored.exemptions, decisions: honored.decisions };
+  return { root, file: gatedFile, ecosystem, env };
 }
 
 const PROCEED: InstallPreflight = { proceed: true };

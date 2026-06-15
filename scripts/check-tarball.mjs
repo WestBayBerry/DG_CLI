@@ -92,7 +92,7 @@ try {
     throw new Error(`package tarball contains disallowed files: ${disallowed.join(", ")}`);
   }
 
-  const required = [...allowedRootFiles, "dist/bin/dg.js"];
+  const required = [...allowedRootFiles, "dist/bin/dg.js", "dist/standalone/uninstall.mjs"];
   for (const path of required) {
     if (!files.includes(path)) {
       throw new Error(`package tarball missing required file: ${path}`);

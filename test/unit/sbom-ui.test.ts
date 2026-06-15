@@ -548,6 +548,19 @@ describe("components renderers", () => {
     expect(body).toContain("| alpha | 1.0.0 | npm | MIT | block |");
     expect(body.trimEnd().split("\n")).toHaveLength(2 + rows.length);
   });
+
+  it("componentsCsv neutralizes spreadsheet formula injection in attacker-named cells (B1-M12)", () => {
+    const evil = mergeVerdicts(buildSbomRows([comp({ name: "=2+5+cmd|/c calc!A1", ecosystem: "npm", version: "1.0.0" })]), "npm", []);
+    const body = componentsCsv(evil);
+    // The formula cell is prefixed with a sentinel apostrophe so no exported field
+    // begins with a bare = + - @ that a spreadsheet would execute on open.
+    expect(body).toContain("'=2+5+cmd");
+    for (const line of body.split("\n").slice(1).filter(Boolean)) {
+      for (const cell of line.split(",")) {
+        expect(/^[=+\-@\t\r]/.test(cell.replace(/^"/, ""))).toBe(false);
+      }
+    }
+  });
 });
 
 describe("rowKey", () => {

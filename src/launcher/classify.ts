@@ -27,6 +27,17 @@ const uvProtected = new Set(["add", "sync"]);
 const cargoProtected = new Set(["add", "install", "fetch", "update", "build", "test", "check", "run"]);
 const passthrough = new Set(["help", "--help", "-h", "version", "--version", "-v", "list", "ls", "show", "freeze"]);
 
+// pip3, pip3.12, python3, python3.11 are the canonical install commands on
+// macOS/Homebrew and many Linux distros (see BINARY_FALLBACKS in
+// resolve-real-binary.ts). The classifier keys on the base name, so a
+// version-suffixed spelling must normalize back to pip/python or it falls
+// through to a silent allow. `pipx`/`pipenv` are left untouched — only a bare
+// numeric/dotted version suffix is stripped.
+export function normalizeManagerName(name: string): string {
+  const m = /^(pip|python)(\d+(?:\.\d+)*)?$/.exec(name);
+  return m && m[1] ? m[1] : name;
+}
+
 export function packageManagerNames(): readonly PackageManager[] {
   return [...supportedManagers, ...gatedManagers];
 }
@@ -35,7 +46,8 @@ export function isSupportedPackageManager(manager: PackageManager): manager is S
   return supportedManagers.includes(manager as SupportedPackageManager);
 }
 
-export function classifyPackageManagerInvocation(manager: PackageManager, args: readonly string[]): PackageManagerClassification {
+export function classifyPackageManagerInvocation(rawManager: PackageManager, args: readonly string[]): PackageManagerClassification {
+  const manager = normalizeManagerName(rawManager) as PackageManager;
   if (!isSupportedPackageManager(manager)) {
     return unsupportedClassification(manager, args);
   }
@@ -51,6 +63,13 @@ export function classifyPackageManagerInvocation(manager: PackageManager, args: 
     return classifyByCommand(manager, args, "pnpm", pnpmProtected, "pnpm install/fetch command", "javascript");
   }
   if (manager === "yarn") {
+    // A bare `yarn` (no sub-command) runs `yarn install`, fetching every lockfile
+    // dependency; classify it protected rather than passthrough. Read-only
+    // version/help invocations stay passthrough.
+    const readOnlyFlag = args.some((a) => a === "--version" || a === "-v" || a === "--help" || a === "-h");
+    if (firstCommand(args) === "" && !readOnlyFlag) {
+      return protectedClassification("yarn", args, "yarn", "bare yarn installs all lockfile dependencies");
+    }
     return classifyByCommand(manager, args, "yarn", yarnProtected, "Yarn classic install/fetch command", "javascript");
   }
   if (manager === "pip") {
@@ -103,6 +122,11 @@ function classifyUv(args: readonly string[]): PackageManagerClassification {
   }
   if (action === "tool" && ["run", "install", "upgrade"].includes(args[1] ?? "")) {
     return protectedClassification("uv", args, "uv", "uv tool run/install/upgrade fetches package artifacts");
+  }
+  if (action === "run" && uvRunFetchesPackage(args)) {
+    // `uv run --with <pkg> …` fetches <pkg> from PyPI and runs it: a real
+    // fetch-and-execute path that the bare `run` verb otherwise waves through.
+    return protectedClassification("uv", args, "uv", "uv run --with fetches and runs a package");
   }
   if (uvProtected.has(action) || containsFetchSpec(args)) {
     return protectedClassification("uv", args, "uv", "uv install/fetch command");
@@ -161,6 +185,12 @@ function initFetchesPackage(action: string, args: readonly string[], protectedCo
   }
   const commandIndex = args.findIndex((arg) => !arg.startsWith("-"));
   return args.slice(commandIndex + 1).some((arg) => arg !== "--" && !arg.startsWith("-"));
+}
+
+export function uvRunFetchesPackage(args: readonly string[]): boolean {
+  return args.some(
+    (a) => a === "--with" || a === "--with-editable" || a === "--with-requirements" || a.startsWith("--with="),
+  );
 }
 
 function containsFetchSpec(args: readonly string[]): boolean {

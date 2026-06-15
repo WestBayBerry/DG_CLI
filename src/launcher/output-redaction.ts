@@ -9,8 +9,11 @@ const jsonSecretPattern =
   /("[A-Za-z0-9_.$-]*(?:secret[_-]key|access[_-]key|api[_-]key|token|password|secret)"\s*:\s*)"(?:[^"\\]|\\.)*"/gi;
 const bearerPattern = /\bBearer\s+[A-Za-z0-9._~+/=-]{8,}/g;
 // Bare tokens (not in URL userinfo or KEY=value form), by their published shape.
+// Alnum-only look-around instead of \b so a fixed-length token immediately
+// adjacent to an underscore-word (e.g. npm_<36>_ci) is still redacted — \b fails
+// there because the boundary would fall between two word characters.
 const knownTokenShapePattern =
-  /\b(npm_[A-Za-z0-9]{36}|gh[pousr]_[A-Za-z0-9]{36,255}|github_pat_[A-Za-z0-9_]{22,255}|pypi-[A-Za-z0-9_-]{20,}|glpat-[A-Za-z0-9_-]{20,}|hf_[A-Za-z0-9]{30,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|sk_(?:live|test)_[A-Za-z0-9]{20,}|rk_live_[A-Za-z0-9]{20,}|sk-(?:proj-)?[A-Za-z0-9_-]{20,}|xox[abdeprs]-[A-Za-z0-9-]{10,})\b/g;
+  /(?<![A-Za-z0-9])(npm_[A-Za-z0-9]{36}|gh[pousr]_[A-Za-z0-9]{36,255}|github_pat_[A-Za-z0-9_]{22,255}|pypi-[A-Za-z0-9_-]{20,}|glpat-[A-Za-z0-9_-]{20,}|hf_[A-Za-z0-9]{30,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}|sk_(?:live|test)_[A-Za-z0-9]{20,}|rk_live_[A-Za-z0-9]{20,}|sk-(?:proj-)?[A-Za-z0-9_-]{20,}|xox[abdeprs]-[A-Za-z0-9-]{10,})(?![A-Za-z0-9])/g;
 
 export function redactSecrets(text: string): string {
   return text

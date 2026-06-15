@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import type { AgentVerdict } from "../launcher/agent-check.js";
+import { formatScreenedNote, type AgentVerdict } from "../launcher/agent-check.js";
 import type { AgentIntegration, EmittedDecision, ParsedHookInput } from "./types.js";
 import { dirExists, mergedJsonHook, LEGACY_AGENT_HOOK_SENTINEL, type Json } from "./persistence.js";
 
@@ -85,6 +85,15 @@ function parseInput(stdin: string): ParsedHookInput | null {
 // silent ({}) on allow so we never override the user's normal permission flow.
 function emitDecision(verdict: AgentVerdict): EmittedDecision {
   if (verdict.decision === "allow") {
+    const note = verdict.screened ? formatScreenedNote(verdict.screened) : "";
+    if (note) {
+      return {
+        stdout: JSON.stringify({
+          hookSpecificOutput: { hookEventName: "PreToolUse", additionalContext: note },
+        }),
+        exitCode: 0,
+      };
+    }
     return { stdout: "{}", exitCode: 0 };
   }
   return {

@@ -7,4 +7,11 @@ paths = [
     '''test/unit/audit\.test\.ts''',
     '''test/unit/output-redaction\.test\.ts''',
     '''test/unit/launcher\.test\.ts''',
+    '''test/unit/auth-policy\.test\.ts''',
+]
+
+[[allowlists]]
+description = "Documented fake-credential fixtures (dg_test_* convention) used across the test suite"
+regexes = [
+    '''dg_test_[A-Za-z0-9_]+''',
 ]

@@ -22,7 +22,7 @@ describe("gemini integration", () => {
   });
 
   function ctx() {
-    return resolveAgentHookContext("gemini", { env: { HOME: home }, home, dgCommand: "/abs/dg hook-exec gemini" });
+    return resolveAgentHookContext("gemini", { env: { HOME: home }, home, dgCommand: `${process.execPath} hook-exec gemini` });
   }
 
   it("parses tool_args.command with a tool_input fallback and fails closed otherwise", () => {

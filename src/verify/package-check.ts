@@ -248,7 +248,9 @@ export async function runPackageCheck(target: string, io: PackageCheckIo = {}, o
     return { exitCode: exitCodeFor("analysis_incomplete"), stdout: "", stderr: `dg verify: scanner returned no result for ${parsed.name}\n` };
   }
 
-  const action = result.action ?? "pass";
+  // A missing per-package action means the scanner did not return a verdict;
+  // treat that as incomplete, never as a clean pass.
+  const action = result.action ?? "analysis_incomplete";
   const rendered =
     options.format === "json"
       ? `${JSON.stringify(

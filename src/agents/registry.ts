@@ -51,9 +51,10 @@ export function defaultDgCommand(agent: AgentId): string {
   } catch {
     // keep argv[1]; the hook still resolves via PATH as a fallback
   }
-  // Absolute node + script path so the agent's non-interactive subprocess
-  // can't lose it to a PATH change (the whole point of the hook).
-  return `${process.execPath} ${bin} ${agentHookSignature(agent)}`;
+  // Run the dg script via its own shebang rather than baking process.execPath:
+  // a version-pinned node path (e.g. .../Cellar/node/<ver>/bin/node) vanishes on
+  // a node upgrade and would silently disable the hook.
+  return `${bin} ${agentHookSignature(agent)}`;
 }
 
 export interface ResolveAgentHookOptions {

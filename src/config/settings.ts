@@ -22,6 +22,8 @@ export interface DgUserConfig {
     readonly trustProjectAllowlists: boolean;
     readonly allowForceOverride: boolean;
     readonly scriptHardening: boolean;
+    readonly shimFailClosed: boolean;
+    readonly strictEgress: boolean;
   };
   readonly scriptGate: {
     readonly mode: ScriptGateMode;
@@ -51,6 +53,8 @@ export type ConfigKey =
   | "policy.trustProjectAllowlists"
   | "policy.allowForceOverride"
   | "policy.scriptHardening"
+  | "policy.shimFailClosed"
+  | "policy.strictEgress"
   | "scriptGate.mode"
   | "scriptGate.observe"
   | "gitHook.onWarn"
@@ -70,6 +74,8 @@ export const CONFIG_KEYS: readonly ConfigKey[] = Object.freeze([
   "policy.trustProjectAllowlists",
   "policy.allowForceOverride",
   "policy.scriptHardening",
+  "policy.shimFailClosed",
+  "policy.strictEgress",
   "scriptGate.mode",
   "scriptGate.observe",
   "gitHook.onWarn",
@@ -95,7 +101,9 @@ export const DEFAULT_CONFIG = Object.freeze({
     mode: "block",
     trustProjectAllowlists: false,
     allowForceOverride: true,
-    scriptHardening: false
+    scriptHardening: false,
+    shimFailClosed: false,
+    strictEgress: false
   },
   scriptGate: {
     mode: "observe",
@@ -110,7 +118,7 @@ export const DEFAULT_CONFIG = Object.freeze({
     npmAge: "",
     pypiAge: "",
     cargoAge: "",
-    onUnknown: "allow",
+    onUnknown: "block",
     exempt: ""
   },
   audit: {
@@ -177,6 +185,17 @@ export function updateUserConfig(
   });
 }
 
+// Whether repo-supplied project overrides (allowlists, cooldown exemptions,
+// warn-decisions) are trusted wholesale. A corrupt config fails closed to
+// untrusted so a hostile repo can never relax screening by breaking the config.
+export function trustsProjectOverrides(env: DgPathEnvironment = process.env): boolean {
+  try {
+    return loadUserConfig(env).policy.trustProjectAllowlists;
+  } catch {
+    return false;
+  }
+}
+
 export function getConfigValue(config: DgUserConfig, key: ConfigKey): string {
   if (key === "api.baseUrl") {
     return config.api.baseUrl;
@@ -195,6 +214,12 @@ export function getConfigValue(config: DgUserConfig, key: ConfigKey): string {
   }
   if (key === "policy.scriptHardening") {
     return String(config.policy.scriptHardening);
+  }
+  if (key === "policy.shimFailClosed") {
+    return String(config.policy.shimFailClosed);
+  }
+  if (key === "policy.strictEgress") {
+    return String(config.policy.strictEgress);
   }
   if (key === "scriptGate.mode") {
     return config.scriptGate.mode;
@@ -232,6 +257,8 @@ export function getConfigValue(config: DgUserConfig, key: ConfigKey): string {
 export const ADVANCED_CONFIG_KEYS: ReadonlySet<ConfigKey> = new Set([
   "org.id",
   "policy.scriptHardening",
+  "policy.shimFailClosed",
+  "policy.strictEgress",
   "scriptGate.observe",
   "cooldown.npm.age",
   "cooldown.pypi.age",
@@ -279,6 +306,12 @@ export function setConfigValue(config: DgUserConfig, key: ConfigKey, rawValue: s
   }
   if (key === "policy.scriptHardening") {
     return withPolicyBoolean(config, "scriptHardening", rawValue);
+  }
+  if (key === "policy.shimFailClosed") {
+    return withPolicyBoolean(config, "shimFailClosed", rawValue);
+  }
+  if (key === "policy.strictEgress") {
+    return withPolicyBoolean(config, "strictEgress", rawValue);
   }
   if (key === "scriptGate.mode") {
     return {
@@ -379,7 +412,9 @@ function normalizeConfig(raw: unknown): DgUserConfig {
         fieldBoolean(policy, "policy.trustProjectAllowlists", "trustProjectAllowlists") ?? DEFAULT_CONFIG.policy.trustProjectAllowlists,
       allowForceOverride:
         fieldBoolean(policy, "policy.allowForceOverride", "allowForceOverride") ?? DEFAULT_CONFIG.policy.allowForceOverride,
-      scriptHardening
+      scriptHardening,
+      shimFailClosed: fieldBoolean(policy, "policy.shimFailClosed", "shimFailClosed") ?? DEFAULT_CONFIG.policy.shimFailClosed,
+      strictEgress: fieldBoolean(policy, "policy.strictEgress", "strictEgress") ?? DEFAULT_CONFIG.policy.strictEgress
     },
     scriptGate: {
       mode: parseScriptGateMode(
@@ -556,7 +591,7 @@ function parseBoolean(value: string, field: string): boolean {
   throw new ConfigError(`${field} must be true or false`);
 }
 
-function parseUrl(value: string): string {
+export function parseUrl(value: string): string {
   const trimmed = value.trim();
   try {
     const url = new URL(trimmed);

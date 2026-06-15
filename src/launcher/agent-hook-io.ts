@@ -1,5 +1,6 @@
-import { agentCheckCommand, type AgentVerdict } from "./agent-check.js";
+import { agentCheckCommand, ESCALATE, formatScreenedNote, type AgentVerdict } from "./agent-check.js";
 import { getAgent } from "../agents/registry.js";
+import { redactSecrets } from "./output-redaction.js";
 import type { AgentId } from "../agents/types.js";
 
 export interface HookExecResult {
@@ -19,7 +20,7 @@ export async function runAgentHookExec(agent: AgentId, stdin: string, deps: Hook
   if (!parsed) {
     // Unreadable payload -> fail closed (deny) so a malformed hook input can
     // never slip an install through unverified.
-    const verdict: AgentVerdict = { decision: "deny", reason: "dg hook: could not read the tool command; blocked under the firewall" };
+    const verdict: AgentVerdict = { decision: "deny", reason: `dg hook: could not read the tool command, so the install is blocked. ${ESCALATE}` };
     const emitted = integration.emitDecision(verdict);
     return { stdout: emitted.stdout, stderr: "dg hook: malformed hook payload\n", exitCode: emitted.exitCode };
   }
@@ -35,9 +36,17 @@ export async function runAgentHookExec(agent: AgentId, stdin: string, deps: Hook
     // Any failure computing the verdict must fail closed: an unhandled throw
     // would otherwise exit non-zero with no decision, which most agents read
     // as allow.
-    verdict = { decision: "deny", reason: "dg hook: firewall check failed; blocked under the firewall (disable: dg agents off)" };
+    verdict = { decision: "deny", reason: `dg hook: the firewall check failed, so the install is blocked. ${ESCALATE}` };
   }
   const emitted = integration.emitDecision(verdict);
-  const stderr = verdict.decision === "allow" ? "" : `  ${verdict.reason ?? "DG firewall"}\n`;
+  const stderr = allowStderr(verdict);
   return { stdout: emitted.stdout, stderr, exitCode: emitted.exitCode };
+}
+
+function allowStderr(verdict: AgentVerdict): string {
+  if (verdict.decision !== "allow") {
+    return `  ${redactSecrets(verdict.reason ?? "DG firewall")}\n`;
+  }
+  const note = verdict.screened ? formatScreenedNote(verdict.screened) : "";
+  return note ? `  ${redactSecrets(note)}\n` : "";
 }

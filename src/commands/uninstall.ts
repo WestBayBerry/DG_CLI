@@ -16,7 +16,8 @@ export const uninstallCommand: CommandSpec = {
   ],
   examples: ["dg uninstall", "dg uninstall --yes --keep-config", "dg uninstall --all --yes"],
   details: [
-    "Removes only dg-owned writes (shims, shell-rc block, git hooks), tolerates missing or malformed state, runs twice safely, and preserves user content."
+    "Removes only dg-owned writes (shims, shell-rc block, git hooks), tolerates missing or malformed state, runs twice safely, and preserves user content.",
+    "Running 'npm uninstall -g @westbayberry/dg' on its own leaves these writes behind; the next npm or pip command then clears them automatically. Run this to remove everything immediately."
   ],
   handler: (context) => uninstallHandler(context.args)
 };

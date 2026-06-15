@@ -1,4 +1,4 @@
-import { access, chmod, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +11,7 @@ import {
   resolveEffectivePolicy
 } from "../../src/policy/evaluate.js";
 import { runCli } from "../../src/runtime/cli.js";
+import { readAuthState } from "../../src/auth/store.js";
 import { resolveDgPaths } from "../../src/state/index.js";
 
 describe("auth and config commands", () => {
@@ -37,6 +38,28 @@ describe("auth and config commands", () => {
     const again = await withEnv(home, () => runCli(["logout", "--yes"]));
     expect(again.exitCode).toBe(0);
     expect(again.stdout).toContain("Already logged out.");
+  });
+
+  it("writes the auth token file 0600 and the .dg dir 0700 (B3-L8)", async () => {
+    const home = await tempHome();
+    const login = await withEnv(home, () => runCli(["login", "--token", "dg_test_perms_1234567890"]));
+    expect(login.exitCode).toBe(0);
+    const fileMode = (await stat(join(home, ".dg", "auth.json"))).mode & 0o777;
+    const dirMode = (await stat(join(home, ".dg"))).mode & 0o777;
+    expect(fileMode).toBe(0o600);
+    expect(dirMode).toBe(0o700);
+  });
+
+  it("rejects an auth.json whose apiBaseUrl is not https so the token is never sent cleartext (auth low #20)", async () => {
+    const home = await tempHome();
+    await mkdir(join(home, ".dg"), { recursive: true });
+    await writeFile(
+      join(home, ".dg", "auth.json"),
+      JSON.stringify({ version: 1, token: "dg_live_x", apiBaseUrl: "http://evil.example", loggedInAt: 1 })
+    );
+    await withEnv(home, () => {
+      expect(() => readAuthState()).toThrow();
+    });
   });
 
   it("rejects positional login arguments naming the accepted forms", async () => {

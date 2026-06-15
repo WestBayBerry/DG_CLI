@@ -423,7 +423,7 @@ export const CONTENT_RULES: readonly ContentRule[] = [
   {
     id: "db-connection-string",
     re: /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqp):\/\/[^:@\s/]+:[^@\s/]+@[^/\s]+/u,
-    allow: /:\/\/[^:@/]+:(password|pass|user|example|changeme|xxx+|\*+)@|@(localhost|127\.0\.0\.1|example\.|host)/iu,
+    allow: /:\/\/[^:@/]+:(password|pass|user|example|changeme|xxx+|\*+)@|@(localhost|127\.0\.0\.1|example\.|host\b)/iu,
     category: "bundled-secret",
     severity: 4,
     title: "Database connection string with password embedded in a published file",
@@ -462,8 +462,12 @@ export const RISKY_SCRIPT_NAMES: readonly string[] = [
   "uninstall"
 ];
 
+// Best-effort heuristic on the LOCAL audit only; a public regex is evadable, so
+// the authoritative verdict is the behavioral scanner. Covers pipe-to-shell, eval,
+// node -e, python -c, base64 -d, curl|sh, AND download-then-execute where the fetch
+// is chained (&& / ;) to a shell or a freshly-downloaded file.
 export const DANGEROUS_SCRIPT_RE =
-  /\|\s*(?:sh|bash|zsh)\b|\beval\s|node\s+-e\b|python[0-9.]*\s+-c\b|base64\s+-d|(?:curl|wget|fetch)\b[^\n]*\|\s*\w*sh\b/iu;
+  /\|\s*(?:sh|bash|zsh)\b|\beval\s|node\s+-e\b|python[0-9.]*\s+-c\b|base64\s+-d|(?:curl|wget|fetch)\b[^\n]*\|\s*\w*sh\b|(?:curl|wget|fetch)\b[^\n]*(?:&&|;)\s*(?:sh|bash|zsh|source|\.\/)/iu;
 
 export const INVISIBLE_UNICODE_RE = /[\u200B-\u200F\u2060-\u2064\u202A-\u202E\u2066-\u2069\uFEFF]/u;
 export const BIDI_OVERRIDE_RE = /[\u202A-\u202E\u2066-\u2069]/u;

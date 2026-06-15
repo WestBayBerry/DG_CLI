@@ -1,8 +1,9 @@
 import { X509Certificate } from "node:crypto";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { writeJsonAtomic } from "../util/json-file.js";
 
 export type TrustStoreProvider = "darwin-user-keychain" | "linux-system-ca" | "file";
 
@@ -233,14 +234,9 @@ export function readCertificateFingerprints(path: string): {
 }
 
 export function writeServiceTrustRecord(path: string, record: ServiceTrustRecord): void {
-  mkdirSync(dirname(path), {
-    recursive: true,
-    mode: 0o700
-  });
-  writeFileSync(path, `${JSON.stringify(record, null, 2)}\n`, {
-    encoding: "utf8",
-    mode: 0o600
-  });
+  // Atomic write so a torn write can't drop the trustInstalled state while the OS
+  // still trusts the CA.
+  writeJsonAtomic(path, record, { fileMode: 0o600, dirMode: 0o700 });
 }
 
 function readCertificateInfo(path: string): {

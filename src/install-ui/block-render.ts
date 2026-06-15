@@ -1,5 +1,6 @@
 import { formatCooldownDuration, formatPackageAge } from "../policy/cooldown.js";
 import type { CooldownInfo, EnforcementCause, EnforcementDecision } from "../proxy/enforcement.js";
+import { sanitizeLine } from "../security/sanitize.js";
 
 const VERIFIED_BAD: ReadonlySet<EnforcementCause> = new Set([
   "malware",
@@ -70,9 +71,9 @@ export function describeBlockedInstall(decision: EnforcementDecision): BlockedIn
     : "Re-check later with 'dg verify', or override if you accept the risk.";
   return {
     kind: verifiedBad ? "blocked" : "unverified",
-    packageName: decision.packageName,
+    packageName: sanitizeLine(decision.packageName),
     headline: HEADLINES[decision.cause],
-    reason: decision.reason,
+    reason: sanitizeLine(decision.reason),
     cause: decision.cause,
     ...(decision.resetsAt ? { resetsAt: decision.resetsAt } : {}),
     ...(nextStep ? { nextStep } : {}),
@@ -81,29 +82,32 @@ export function describeBlockedInstall(decision: EnforcementDecision): BlockedIn
 }
 
 export function describeFlaggedWarn(decision: EnforcementDecision): { packageName: string; reason: string } {
+  const packageName = sanitizeLine(decision.packageName);
   if (decision.cause === "quota-exceeded") {
-    return { packageName: decision.packageName, reason: "installed unverified (over quota)" };
+    return { packageName, reason: "installed unverified (over quota)" };
   }
   if (decision.forceOverride?.allowed) {
-    return { packageName: decision.packageName, reason: "installed despite block (--dg-force-install)" };
+    return { packageName, reason: "installed despite block (--dg-force-install)" };
   }
-  return { packageName: decision.packageName, reason: decision.reason };
+  return { packageName, reason: sanitizeLine(decision.reason) };
 }
 
 export function renderInstallDecision(decision: EnforcementDecision): string {
+  const packageName = sanitizeLine(decision.packageName);
+  const reason = sanitizeLine(decision.reason);
   if (decision.action === "pass") {
-    return `✓ DG verified ${decision.packageName} — clean\n`;
+    return `✓ DG verified ${packageName} — clean\n`;
   }
 
   if (decision.action === "warn") {
     if (decision.cause === "quota-exceeded") {
       const reset = formatResetDate(decision.resetsAt);
-      return `⚠ Over quota — installed ${decision.packageName} unverified${reset ? ` (resets ${reset})` : ""}\n`;
+      return `⚠ Over quota — installed ${packageName} unverified${reset ? ` (resets ${reset})` : ""}\n`;
     }
     if (decision.forceOverride?.allowed) {
-      return `⚠ DG override — installing ${decision.packageName} despite block (--dg-force-install)\n`;
+      return `⚠ DG override — installing ${packageName} despite block (--dg-force-install)\n`;
     }
-    return `⚠ DG flagged ${decision.packageName} (warn) — ${decision.reason}\n`;
+    return `⚠ DG flagged ${packageName} (warn) — ${reason}\n`;
   }
 
   if (decision.cause === "quota-exceeded") {
@@ -120,16 +124,16 @@ export function renderInstallDecision(decision: EnforcementDecision): string {
     verifiedBad
       ? `✘ DG blocked install — ${headline}`
       : decision.cause === "cooldown"
-        ? `? DG quarantined ${decision.packageName} — ${headline}`
-        : `? DG could not verify ${decision.packageName} — ${headline}`,
-    `  ${decision.packageName}   ${decision.reason}`
+        ? `? DG quarantined ${packageName} — ${headline}`
+        : `? DG could not verify ${packageName} — ${headline}`,
+    `  ${packageName}   ${reason}`
   ];
 
   if (decision.cause === "cooldown" && decision.cooldown) {
     lines.push(`  ${cooldownDetailLine(decision.cooldown)}`);
   }
   if (decision.dashboardUrl) {
-    lines.push(`  Evidence: ${decision.dashboardUrl}`);
+    lines.push(`  Evidence: ${sanitizeLine(decision.dashboardUrl)}`);
   }
   if (decision.unauthenticated && decision.cause !== "needs-login") {
     lines.push("  Auth: local policy only (run 'dg login' for full coverage)");

@@ -2,6 +2,7 @@ import React from "react";
 import { Box, Text } from "ink";
 import InkSpinner from "ink-spinner";
 import { formatResetDate } from "./block-render.js";
+import { sanitizeLine } from "../security/sanitize.js";
 import type { EnforcementCause } from "../proxy/enforcement.js";
 
 export interface LiveInstallBlocked {
@@ -47,7 +48,7 @@ export const LiveInstall: React.FC<{ readonly view: LiveInstallView }> = ({ view
           : view.resolvedTotal !== undefined && view.total <= view.resolvedTotal
             ? `DG verifying ${view.total}/${view.resolvedTotal}…`
             : `DG verifying ${packageCount(view.total)}…`}</Text>
-        {view.current ? <Text dimColor>  {view.current}</Text> : null}
+        {view.current ? <Text dimColor>  {sanitizeLine(view.current)}</Text> : null}
       </Box>
     );
   }
@@ -97,7 +98,7 @@ export const LiveInstall: React.FC<{ readonly view: LiveInstallView }> = ({ view
         </Text>
         {(view.flaggedItems ?? []).map((item, index) => (
           <Text key={`${item.packageName}-${index}`} dimColor>
-            {"   "}{item.packageName}   {item.reason}
+            {"   "}{sanitizeLine(item.packageName)}   {sanitizeLine(item.reason)}
           </Text>
         ))}
       </Box>

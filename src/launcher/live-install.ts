@@ -1,6 +1,6 @@
 import { createLaunchPlan, prepareProxyWorker, runWithProductionProxyLive, EXIT_INSTALL_BLOCKED, type PreparedProxyWorker, type RunPackageManagerOptions } from "./run.js";
 import { runInstallPreflight, type InstallPreflight } from "./install-preflight.js";
-import { isSupportedPackageManager, type PackageManager } from "./classify.js";
+import { isSupportedPackageManager, normalizeManagerName, type PackageManager } from "./classify.js";
 import { isCiEnv, resolvePresentation } from "../presentation/mode.js";
 import { startPrepSpinner } from "../install-ui/prep-spinner.js";
 import type { CommandResult } from "../commands/types.js";
@@ -21,8 +21,9 @@ export async function maybeRunLiveInstall(
     return FALL_THROUGH;
   }
 
-  const [manager, ...rest] = args;
-  if (!manager || !isSupportedPackageManager(manager as PackageManager)) {
+  const [rawManager, ...rest] = args;
+  const manager = normalizeManagerName(rawManager ?? "") as PackageManager;
+  if (!rawManager || !isSupportedPackageManager(manager)) {
     return FALL_THROUGH;
   }
 

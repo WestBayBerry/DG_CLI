@@ -1,9 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const checkMock = vi.fn();
-vi.mock("../../src/launcher/agent-check.js", () => ({
-  agentCheckCommand: (...a: unknown[]) => checkMock(...a),
-}));
+vi.mock("../../src/launcher/agent-check.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/launcher/agent-check.js")>();
+  return {
+    ...actual,
+    agentCheckCommand: (...a: unknown[]) => checkMock(...a),
+  };
+});
 
 import { runAgentHookExec } from "../../src/launcher/agent-hook-io.js";
 

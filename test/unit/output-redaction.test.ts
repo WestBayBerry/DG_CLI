@@ -35,6 +35,11 @@ describe("redactSecrets", () => {
     expect(redactSecrets(`x ${token} y`)).toBe("x <redacted> y");
   });
 
+  it("redacts a known-shape token immediately followed by an underscore-word (output-redaction low)", () => {
+    const token = `npm_${"A".repeat(18)}${"9".repeat(18)}`;
+    expect(redactSecrets(`${token}_ci`)).toBe("<redacted>_ci");
+  });
+
   it("redacts a pypi- token", () => {
     const token = "pypi-AgEIcGkAY2ZmZmZmZmYx";
     expect(token.length).toBeGreaterThanOrEqual(25);

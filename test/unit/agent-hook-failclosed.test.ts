@@ -1,17 +1,21 @@
 import { describe, expect, it, vi } from "vitest";
 
 let throwMode = false;
-vi.mock("../../src/launcher/agent-check.js", () => ({
-  agentCheckCommand: (): Promise<{ decision: string }> => {
-    if (throwMode) {
-      // Synchronous throw (no rejected promise) models a verdict-engine
-      // failure such as an I/O error reading dg.json, and is what the
-      // try/catch in runAgentHookExec must turn into a block.
-      throw new Error("simulated verdict-engine failure");
-    }
-    return Promise.resolve({ decision: "allow" });
-  },
-}));
+vi.mock("../../src/launcher/agent-check.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/launcher/agent-check.js")>();
+  return {
+    ...actual,
+    agentCheckCommand: (): Promise<{ decision: string }> => {
+      if (throwMode) {
+        // Synchronous throw (no rejected promise) models a verdict-engine
+        // failure such as an I/O error reading dg.json, and is what the
+        // try/catch in runAgentHookExec must turn into a block.
+        throw new Error("simulated verdict-engine failure");
+      }
+      return Promise.resolve({ decision: "allow" });
+    },
+  };
+});
 
 import { runAgentHookExec } from "../../src/launcher/agent-hook-io.js";
 

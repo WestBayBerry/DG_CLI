@@ -23,7 +23,7 @@ describe("codex integration", () => {
   });
 
   function ctx() {
-    return resolveAgentHookContext("codex", { env: { HOME: home }, home, dgCommand: "/abs/dg hook-exec codex" });
+    return resolveAgentHookContext("codex", { env: { HOME: home }, home, dgCommand: `${process.execPath} hook-exec codex` });
   }
 
   it("parses the Claude-shaped payload and fails closed on malformed input", () => {
@@ -39,7 +39,7 @@ describe("codex integration", () => {
     expect(deny.reason).toBe("blocked");
     const ask = JSON.parse(codexIntegration.emitDecision({ decision: "ask", reason: "flagged" }).stdout) as Record<string, string>;
     expect(ask.decision).toBe("block");
-    expect(ask.reason).toContain("flagged for review");
+    expect(ask.reason).toContain("human review");
   });
 
   it("probes the codex CLI version and refuses below 0.124.0 or when unknown", () => {

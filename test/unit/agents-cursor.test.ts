@@ -22,7 +22,7 @@ describe("cursor integration", () => {
   });
 
   function ctx() {
-    return resolveAgentHookContext("cursor", { env: { HOME: home }, home, dgCommand: "/abs/dg hook-exec cursor" });
+    return resolveAgentHookContext("cursor", { env: { HOME: home }, home, dgCommand: `${process.execPath} hook-exec cursor` });
   }
 
   it("parses the top-level command payload and fails closed otherwise", () => {

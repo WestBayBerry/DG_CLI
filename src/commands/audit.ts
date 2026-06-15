@@ -178,6 +178,12 @@ export async function maybeAudit(args: readonly string[]): Promise<{ handled: bo
       }
     }
   }
+  // Org policy must gate every upload, not just the consent prompt: a pre-granted
+  // consent (DG_AUDIT_UPLOAD=1 / config) must not transmit the tarball when the
+  // organization has disabled artifact upload.
+  if (decision.upload && (await teamPolicyBlocksUpload())) {
+    decision = { upload: false, reason: "deep audit upload is disabled by your organization's policy" };
+  }
 
   if (shouldLaunchAuditTui({ format: gathered.parsed.format, outputPath: gathered.parsed.outputPath })) {
     const uploadAbort = new AbortController();

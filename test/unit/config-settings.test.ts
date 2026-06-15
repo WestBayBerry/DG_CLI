@@ -147,6 +147,29 @@ describe("user config strict type validation", () => {
     );
   });
 
+  it("round-trips policy.shimFailClosed and defaults it to false", () => {
+    expect(DEFAULT_CONFIG.policy.shimFailClosed).toBe(false);
+    expect(getConfigValue(DEFAULT_CONFIG, "policy.shimFailClosed")).toBe("false");
+    const on = setConfigValue(DEFAULT_CONFIG, "policy.shimFailClosed", "true");
+    expect(on.policy.shimFailClosed).toBe(true);
+    expect(getConfigValue(on, "policy.shimFailClosed")).toBe("true");
+    expect(unsetConfigValue(on, "policy.shimFailClosed").policy.shimFailClosed).toBe(false);
+    expect(() => setConfigValue(DEFAULT_CONFIG, "policy.shimFailClosed", "yes")).toThrow(
+      "policy.shimFailClosed must be true or false"
+    );
+  });
+
+  it("round-trips policy.strictEgress and defaults it to false", () => {
+    expect(DEFAULT_CONFIG.policy.strictEgress).toBe(false);
+    const on = setConfigValue(DEFAULT_CONFIG, "policy.strictEgress", "true");
+    expect(on.policy.strictEgress).toBe(true);
+    expect(getConfigValue(on, "policy.strictEgress")).toBe("true");
+    expect(unsetConfigValue(on, "policy.strictEgress").policy.strictEgress).toBe(false);
+    expect(() => setConfigValue(DEFAULT_CONFIG, "policy.strictEgress", "maybe")).toThrow(
+      "policy.strictEgress must be true or false"
+    );
+  });
+
   it("restricts api.baseUrl to http/https even for localhost", () => {
     expect(setConfigValue(DEFAULT_CONFIG, "api.baseUrl", "http://localhost:3000").api.baseUrl).toBe("http://localhost:3000");
     expect(setConfigValue(DEFAULT_CONFIG, "api.baseUrl", "http://127.0.0.1:3000").api.baseUrl).toBe("http://127.0.0.1:3000");

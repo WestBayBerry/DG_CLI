@@ -6,6 +6,7 @@ import { gitTrimmed } from "../util/git.js";
 import { writeJsonAtomic } from "../util/json-file.js";
 import { canonicalCooldownName } from "../policy/pypi-name.js";
 import { acquireLockSyncWithRetry, resolveDgPaths } from "../state/index.js";
+import { stampAuthoredEntries } from "./override-trust.js";
 
 const DG_FILE_LOCK_STALE_MS = 10_000;
 const DG_FILE_LOCK_TIMEOUT_MS = 5_000;
@@ -31,7 +32,7 @@ export function mutateDgFile(root: string, env: NodeJS.ProcessEnv, mutate: (file
     if (!file.readable) {
       throw new Error(`refusing to rewrite ${file.path}: ${file.failure ?? "unreadable"}`);
     }
-    const next = mutate(file);
+    const next = stampAuthoredEntries(mutate(file), file, root, env);
     saveDgFile(next);
     return next;
   });

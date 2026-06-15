@@ -6,7 +6,7 @@ import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { decideFromVerdicts, resetInstallPreflightSession, type PreflightDecisionContext } from "../../src/launcher/install-preflight.js";
 import { maybePreflightInstallPrompt } from "../../src/launcher/preflight-prompt.js";
-import { dgFilePath, loadDgFile } from "../../src/project/dgfile.js";
+import { appendDecisions, dgFilePath, loadDgFile, mutateDgFile } from "../../src/project/dgfile.js";
 import type { AnalyzeResponse, ScannerPackageResult } from "../../src/api/analyze.js";
 
 const made: string[] = [];
@@ -191,9 +191,15 @@ describe("pinned-spec preflight with decision memory", () => {
     const home = tempDir("dg-home-");
     const env = baseEnv(home);
     const repo = initRepo(env);
-    writeFileSync(
-      dgFilePath(repo),
-      JSON.stringify({ version: 1, decisions: [acceptedEntry({ ecosystem: "npm", name: "left-pad", scope: { kind: "exact", version: "1.3.0" } })] })
+    mutateDgFile(repo, env, (file) =>
+      appendDecisions(file, [{
+        ecosystem: "npm",
+        name: "left-pad",
+        scope: { kind: "exact", version: "1.3.0" },
+        findings: { lifecycle: 3 },
+        reason: "vetted",
+        acceptedBy: "alice@example.com"
+      }]),
     );
     const promptIo = io();
 
@@ -213,9 +219,15 @@ describe("pinned-spec preflight with decision memory", () => {
     const home = tempDir("dg-home-");
     const env = baseEnv(home);
     const repo = initRepo(env);
-    writeFileSync(
-      dgFilePath(repo),
-      JSON.stringify({ version: 1, decisions: [acceptedEntry({ ecosystem: "npm", name: "left-pad", scope: { kind: "exact", version: "1.3.0" } })] })
+    mutateDgFile(repo, env, (file) =>
+      appendDecisions(file, [{
+        ecosystem: "npm",
+        name: "left-pad",
+        scope: { kind: "exact", version: "1.3.0" },
+        findings: { lifecycle: 3 },
+        reason: "vetted",
+        acceptedBy: "alice@example.com"
+      }]),
     );
     const promptIo = io();
     promptIo.input.write("\n");

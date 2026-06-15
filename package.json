@@ -1,6 +1,6 @@
 {
   "name": "@westbayberry/dg",
-  "version": "2.2.0",
+  "version": "2.3.1",
   "description": "Dependency Guardian supply-chain firewall CLI",
   "repository": {
     "type": "git",
@@ -30,6 +30,7 @@
     "test": "vitest run",
     "test:unit": "vitest run test/unit",
     "test:integration": "vitest run test/integration",
+    "check:agents": "vitest run test/unit/agent-check.test.ts test/unit/agent-hook-io.test.ts test/unit/agent-hook-failclosed.test.ts test/unit/agent-registry.test.ts test/unit/agents-codex.test.ts test/unit/agents-cursor.test.ts test/unit/agents-gemini.test.ts test/unit/agents-copilot-cli.test.ts test/unit/agents-windsurf.test.ts test/integration/agent-hook-e2e.test.ts",
     "typecheck": "tsc --noEmit",
     "lint": "node scripts/lint.mjs",
     "format:check": "node scripts/format-check.mjs",

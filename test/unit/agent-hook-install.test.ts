@@ -59,7 +59,7 @@ describe("agent-hook install/remove (temp HOME)", () => {
   });
 
   function ctx(): AgentHookContext {
-    return resolveAgentHookContext("claude-code", { env: { HOME: home }, home, dgCommand: "/abs/dg hook-exec claude-code" });
+    return resolveAgentHookContext("claude-code", { env: { HOME: home }, home, dgCommand: `${process.execPath} hook-exec claude-code` });
   }
 
   it("installs into a fresh HOME and fully reverses (file dg-created -> removed)", async () => {

@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
-import { loadUserConfig, saveUserConfig, withUserConfigLock } from "../config/settings.js";
+import { loadUserConfig, parseUrl, saveUserConfig, withUserConfigLock } from "../config/settings.js";
 import { resolveDgPaths, type DgPathEnvironment, type DgPaths } from "../state/index.js";
 import { envAuthToken } from "./env-token.js";
 
@@ -50,6 +50,12 @@ export function readAuthState(env: DgPathEnvironment = process.env): AuthState |
     if (parsed.version !== 1 || !parsed.token || !parsed.apiBaseUrl || parsed.loggedInAt === undefined) {
       throw new AuthError("unsupported auth state");
     }
+    let apiBaseUrl: string;
+    try {
+      apiBaseUrl = parseUrl(parsed.apiBaseUrl);
+    } catch {
+      throw new AuthError("auth state has an invalid api base URL; run 'dg login' again");
+    }
     const email = typeof parsed.email === "string" && parsed.email.length > 0 ? parsed.email : undefined;
     const tier = typeof parsed.tier === "string" && parsed.tier.length > 0 ? parsed.tier : undefined;
     const name = typeof parsed.name === "string" && parsed.name.length > 0 ? parsed.name : undefined;
@@ -57,7 +63,7 @@ export function readAuthState(env: DgPathEnvironment = process.env): AuthState |
       version: 1,
       token: parsed.token,
       tokenPreview: parsed.tokenPreview ?? redactToken(parsed.token),
-      apiBaseUrl: parsed.apiBaseUrl,
+      apiBaseUrl,
       orgId: parsed.orgId ?? "",
       loggedInAt: parsed.loggedInAt,
       ...(email ? { email } : {}),

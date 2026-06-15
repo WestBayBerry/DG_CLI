@@ -16,6 +16,7 @@ import { Agent as HttpsAgent, request as httpsRequest } from "node:https";
 import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { connect, type Socket } from "node:net";
+import { lookup as dnsLookup, type LookupAddress } from "node:dns";
 import { createSecureContext, createServer as createTlsServer, connect as tlsConnect, rootCertificates, type TLSSocket } from "node:tls";
 import { createEphemeralCertificateAuthority, type CertificateAuthority } from "./ca.js";
 import { shouldMitmHost } from "./classify-host.js";
@@ -260,6 +261,16 @@ async function handleConnectRequest(
   }
 
   if (!shouldMitmHost(target.hostname, options.env)) {
+    if (strictEgressEnabled(options.env)) {
+      recordDecision(options, state, {
+        verdict: "block",
+        packageName: target.hostname,
+        cause: "policy",
+        reason: `strict egress: refusing to tunnel to un-screened host ${target.hostname} (add it to DG_PROXY_MITM_HOSTS to screen it, or disable policy.strictEgress)`
+      });
+      clientSocket.end("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+      return;
+    }
     state.events = [...state.events, `tunnel:${redactSecrets(authorityFor(target))}`];
     writeProxyState(options.session, state);
     await blindTunnel(clientSocket, head, target, options, activeSockets);
@@ -294,6 +305,18 @@ const STREAMING_DISABLED = Number.POSITIVE_INFINITY;
 // or mixes TLS trust. Purely transport-level — no effect on what gets verified.
 const upstreamHttpAgent = new HttpAgent({ keepAlive: true, maxSockets: 64, scheduling: "fifo" });
 const upstreamHttpsAgent = new HttpsAgent({ keepAlive: true, maxSockets: 64, scheduling: "fifo" });
+
+// Opt-in (policy.strictEgress, default off): a CONNECT to a host dg doesn't MITM
+// is blind-tunnelled, so its artifacts arrive unscanned. Managed/CI environments
+// can fail those closed instead. A corrupt config reads as off so a broken config
+// never blocks installs that the default would have allowed.
+function strictEgressEnabled(env: NodeJS.ProcessEnv): boolean {
+  try {
+    return loadUserConfig(env).policy.strictEgress;
+  } catch {
+    return false;
+  }
+}
 
 function streamThresholdBytes(env: NodeJS.ProcessEnv): number {
   const raw = env.DG_STREAM_THRESHOLD_BYTES;
@@ -516,18 +539,94 @@ function isRedirectStatus(statusCode: number): boolean {
 // only string-matches the dotted-decimal form silently lets the cloud-metadata
 // IP through as "public". Recover the embedded IPv4 (both forms) before
 // classifying so the IPv4 ranges below cover the mapped address too.
+function hextetsToIpv4(hi: string, lo: string): string {
+  const h = parseInt(hi, 16);
+  const l = parseInt(lo, 16);
+  return `${(h >> 8) & 0xff}.${h & 0xff}.${(l >> 8) & 0xff}.${l & 0xff}`;
+}
+
+// Recover an IPv4 address embedded in an IPv6 literal so the IPv4 ranges below
+// also cover it. Covers IPv4-mapped (::ffff:), IPv4-compatible (::), 6to4
+// (2002::/16), and NAT64 (64:ff9b::/96) — each a way to smuggle 169.254.169.254
+// past a guard that only string-matches the dotted-decimal form.
 function recoverIpv4MappedHost(host: string): string {
-  const dotted = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i.exec(host);
-  if (dotted?.[1]) {
-    return dotted[1];
-  }
-  const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(host);
-  if (hex?.[1] && hex?.[2]) {
-    const hi = parseInt(hex[1], 16);
-    const lo = parseInt(hex[2], 16);
-    return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
-  }
+  const mappedDotted = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i.exec(host);
+  if (mappedDotted?.[1]) return mappedDotted[1];
+  const mappedHex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(host);
+  if (mappedHex?.[1] && mappedHex[2]) return hextetsToIpv4(mappedHex[1], mappedHex[2]);
+  const compatDotted = /^::(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i.exec(host);
+  if (compatDotted?.[1]) return compatDotted[1];
+  const compatHex = /^::([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(host);
+  if (compatHex?.[1] && compatHex[2]) return hextetsToIpv4(compatHex[1], compatHex[2]);
+  const sixToFour = /^2002:([0-9a-f]{1,4}):([0-9a-f]{1,4}):/i.exec(host);
+  if (sixToFour?.[1] && sixToFour[2]) return hextetsToIpv4(sixToFour[1], sixToFour[2]);
+  const nat64Dotted = /^64:ff9b::(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i.exec(host);
+  if (nat64Dotted?.[1]) return nat64Dotted[1];
+  const nat64Hex = /^64:ff9b::([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(host);
+  if (nat64Hex?.[1] && nat64Hex[2]) return hextetsToIpv4(nat64Hex[1], nat64Hex[2]);
   return host;
+}
+
+// Block a RESOLVED address (the actual connect target), so a public hostname
+// whose A/AAAA record points at an internal/metadata IP — DNS-rebinding SSRF —
+// is refused at connect time, not just literal-IP targets.
+export function isBlockedResolvedIp(ip: string): boolean {
+  const host = recoverIpv4MappedHost(ip.toLowerCase().replace(/^\[/, "").replace(/\]$/, ""));
+  if (host === "0.0.0.0" || host === "::" || host === "::1") {
+    return true;
+  }
+  if (isPrivateIpv4(host)) {
+    return true;
+  }
+  return /^(fe80|f[cd][0-9a-f]{2}):/.test(host);
+}
+
+type GuardedLookupCb = (err: NodeJS.ErrnoException | null, address: string | LookupAddress[], family?: number) => void;
+
+function guardedLookup(hostname: string, options: unknown, callback: GuardedLookupCb): void {
+  const opts = typeof options === "object" && options !== null ? (options as Record<string, unknown>) : {};
+  dnsLookup(hostname, { ...opts, all: true }, (err, addresses) => {
+    if (err) {
+      callback(err, "", 0);
+      return;
+    }
+    const list = addresses as LookupAddress[];
+    const blocked = list.find((entry) => isBlockedResolvedIp(entry.address));
+    if (blocked) {
+      callback(new Error(`refusing to connect to ${hostname}: resolves to blocked address ${blocked.address}`), "", 0);
+      return;
+    }
+    if (opts.all === true) {
+      callback(null, list);
+      return;
+    }
+    const first = list[0];
+    if (!first) {
+      callback(new Error(`no address found for ${hostname}`), "", 0);
+      return;
+    }
+    callback(null, first.address, first.family);
+  });
+}
+
+// The resolved-IP guard exists for DNS rebinding — a PUBLIC hostname whose A/AAAA
+// record points at an internal IP. It must not fire for: an explicitly-configured
+// private registry (DG_PRIVATE_REGISTRY_HOSTS) whose name legitimately resolves to
+// a private IP; a test host-map target; or a target that is ALREADY a private/
+// loopback literal (the user/test pointed there directly — not rebinding, and the
+// link-local/metadata literal is still blocked at the artifact path).
+function lookupForTarget(target: URL, env: NodeJS.ProcessEnv): typeof guardedLookup | undefined {
+  const host = target.hostname.replace(/^\[(.*)\]$/, "$1");
+  if (hostMatchesList(target.hostname, env.DG_PRIVATE_REGISTRY_HOSTS ?? "")) {
+    return undefined;
+  }
+  if (testUpstreamHostMap(env).has(host)) {
+    return undefined;
+  }
+  if (isPrivateNetworkHost(target)) {
+    return undefined;
+  }
+  return guardedLookup;
 }
 
 function isPrivateIpv4(host: string): boolean {
@@ -750,7 +849,7 @@ async function blindTunnel(
   const upstreamProxy = selectUpstreamProxy(target, options.env);
   const upstreamSocket = upstreamProxy
     ? await connectViaUpstreamProxy(target, upstreamProxy)
-    : await connectDirect(target);
+    : await connectDirect(target, options.env);
   trackSocket(activeSockets, upstreamSocket);
   clientSocket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
   if (head.length > 0) {
@@ -835,9 +934,9 @@ function parseConnectTarget(authority: string | undefined): URL | null {
   }
 }
 
-function connectDirect(target: URL): Promise<Socket> {
+function connectDirect(target: URL, env: NodeJS.ProcessEnv = process.env): Promise<Socket> {
   return new Promise((resolve, reject) => {
-    const socket = connect(Number(target.port || "443"), upstreamHostname(target));
+    const socket = connect({ port: Number(target.port || "443"), host: upstreamHostname(target, env), lookup: lookupForTarget(target, env) });
     socket.once("connect", () => resolve(socket));
     socket.once("error", reject);
   });
@@ -889,6 +988,7 @@ function fetchUpstream(request: IncomingMessage, target: URL, env: NodeJS.Proces
       path: `${target.pathname}${target.search}`,
       method: request.method,
       agent: upstreamHttpAgent,
+      lookup: lookupForTarget(target, env),
       headers: stripProxyHopHeaders(request.headers)
     }, (upstreamResponse) => {
       collectBounded(upstreamResponse, { label: target.toString() })
@@ -967,6 +1067,7 @@ function fetchHttpsDirect(request: IncomingMessage, target: URL, env: NodeJS.Pro
       path: `${target.pathname}${target.search}`,
       method: request.method,
       agent: upstreamHttpsAgent,
+      lookup: lookupForTarget(target, env),
       headers: upstreamRequestHeaders(request, target),
       ...upstreamTlsOptions(env)
     }, (upstreamResponse) => {
@@ -1132,10 +1233,16 @@ function headerLines(key: string, value: string | number | readonly string[] | u
   return [`${key}: ${value}`];
 }
 
-function upstreamTlsOptions(env: NodeJS.ProcessEnv): {
+export function upstreamTlsOptions(env: NodeJS.ProcessEnv): {
   readonly ca?: string[];
 } {
-  const caPath = env.DG_UPSTREAM_CA_CERT ?? env.NODE_EXTRA_CA_CERTS;
+  // Trust an extra upstream CA only from DG_UPSTREAM_CA_CERT — an explicit,
+  // dg-specific knob for corporate TLS-intercepting proxies / private mirrors.
+  // The ambient NODE_EXTRA_CA_CERTS is deliberately NOT honored here: dg's own
+  // agent routing sets that variable to dg's MITM CA for the CLIENT side, so
+  // re-consuming it as an UPSTREAM trust anchor would let any process that can
+  // set it MITM the real registry through dg's proxy.
+  const caPath = env.DG_UPSTREAM_CA_CERT;
   if (!caPath) {
     return {};
   }
@@ -1341,6 +1448,14 @@ function preverifiedVerdict(
     return null;
   }
   if (!entry.cooldownEvaluated && resolveCooldownRequest(options, identity) !== undefined) {
+    return null;
+  }
+  if (!entry.scannedSha256) {
+    // No byte-level fingerprint to cross-check against the streamed artifact, so
+    // a preverified pass/warn can't prove the downloaded bytes match what was
+    // screened (a metadata-only preflight, or a registry swap between preflight
+    // and fetch). Fall through to a real scan of the streamed bytes — TOCTOU
+    // defense — rather than honoring the verdict for whatever now arrives.
     return null;
   }
   return normalizeVerdict(

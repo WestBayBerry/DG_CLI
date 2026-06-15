@@ -365,7 +365,8 @@ export interface RunSetupWizardOptions {
 export async function runSetupWizard(plan: SetupPlan, options: RunSetupWizardOptions = {}): Promise<CommandResult> {
   const env = options.env ?? process.env;
   const ci = process.env.CI;
-  if (ci === "" || ci === "0" || ci === "false") {
+  const restoreCi = ci === "" || ci === "0" || ci === "false";
+  if (restoreCi) {
     delete process.env.CI;
   }
   const agents = collectAgentOffers();
@@ -401,12 +402,19 @@ export async function runSetupWizard(plan: SetupPlan, options: RunSetupWizardOpt
   );
   await instance.waitUntilExit();
   leaveTui();
+  if (restoreCi) {
+    process.env.CI = ci;
+  }
 
   const theme = createTheme(resolvePresentation().color);
   const accent = (text: string): string => theme.paint("accent", text);
   const muted = (text: string): string => theme.paint("muted", text);
   const outcome = state.outcome;
   if (outcome === null) {
+    // Aborted (e.g. Ctrl-C). Record the skip so the wizard does not re-intercept
+    // every subsequent dg command until the user explicitly declines or applies it.
+    markWizardSkipped(env);
+    markFirstRunShown(env);
     return { exitCode: 0, stdout: "", stderr: "" };
   }
   if (outcome.kind === "declined") {

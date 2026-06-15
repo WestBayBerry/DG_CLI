@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { createTheme, type Theme } from "../presentation/theme.js";
 import { resolvePresentation } from "../presentation/mode.js";
-import { loadUserConfig } from "../config/settings.js";
+import { DEFAULT_CONFIG, loadUserConfig } from "../config/settings.js";
 import { offerRememberSync, type RememberPackage, type SyncRememberPrompts } from "../decisions/remember-prompt.js";
 import { packageKey } from "../decisions/apply.js";
 import { loadDgFile, resolveAcceptedBy, warnUnreadableDgFile, type DgFile } from "../project/dgfile.js";
@@ -106,9 +106,10 @@ export function runStagedScan(options: StagedScanOptions): CommandResult {
     return notARepoResult();
   }
 
+  const onIncomplete = gitHookOnIncomplete(env);
   const lockfiles = stagedLockfilePaths(cwd, env);
   if (lockfiles === null) {
-    return failOpen(theme, "could not read staged changes");
+    return failOpen(theme, "could not read staged changes", onIncomplete);
   }
   const scoped = scopeStagedPaths(lockfiles, root, cwd, options.targetPath ?? null);
   if (scoped === null) {
@@ -127,11 +128,11 @@ export function runStagedScan(options: StagedScanOptions): CommandResult {
   const { dir, count } = materializeStaged(scoped, cwd, env);
   try {
     if (count === 0) {
-      return failOpen(theme, "could not read the staged lockfile contents");
+      return failOpen(theme, "could not read the staged lockfile contents", onIncomplete);
     }
     const report = tryScannerScan(dir, emptyLocalReport(dir), env, usableDgFile);
     if (!report || !report.scanner) {
-      return failOpen(theme, "could not reach the scanner");
+      return failOpen(theme, "could not reach the scanner", onIncomplete);
     }
     return decideStagedVerdict(report, env, options.hook, usableDgFile ? { root, file: usableDgFile } : undefined);
   } finally {
@@ -220,7 +221,7 @@ export function decideStagedVerdict(
   }
 
   if (action === "error" || action === "unknown") {
-    return scannerUnavailable(theme);
+    return scannerUnavailable(theme, config.gitHook.onIncomplete);
   }
 
   if (action === "warn") {
@@ -353,15 +354,37 @@ function incompleteNotice(theme: Theme, blocked: boolean): string {
   return `${head} ${theme.paint("muted", "— proceeding")}\n`;
 }
 
-function failOpen(theme: Theme, reason: string): CommandResult {
+function gitHookOnIncomplete(env: NodeJS.ProcessEnv): "allow" | "block" {
+  try {
+    return loadUserConfig(env).gitHook.onIncomplete;
+  } catch {
+    return DEFAULT_CONFIG.gitHook.onIncomplete;
+  }
+}
+
+function failOpen(theme: Theme, reason: string, onIncomplete: "allow" | "block"): CommandResult {
+  if (onIncomplete === "block") {
+    return {
+      exitCode: 1,
+      stdout: "",
+      stderr: `  ${theme.paint("unknown", "?")} ${theme.paint("muted", `DG could not verify (${reason}) — commit blocked (gitHook.onIncomplete=block). Use`)} ${theme.paint("accent", "git commit --no-verify")} ${theme.paint("muted", "to override.")}\n`
+    };
+  }
   return {
     exitCode: 0,
     stdout: "",
-    stderr: `  ${theme.paint("unknown", "?")} ${theme.paint("muted", `DG could not verify (${reason}) — commit allowed`)}\n`
+    stderr: `  ${theme.paint("unknown", "?")} ${theme.paint("muted", `DG could not verify (${reason}) — commit allowed (gitHook.onIncomplete=allow)`)}\n`
   };
 }
 
-function scannerUnavailable(theme: Theme): CommandResult {
+function scannerUnavailable(theme: Theme, onIncomplete: "allow" | "block"): CommandResult {
+  if (onIncomplete === "block") {
+    return {
+      exitCode: 1,
+      stdout: "",
+      stderr: `  ${theme.paint("unknown", "?")} ${theme.paint("muted", "dg: scanner unavailable — staged changes not verified; commit blocked (gitHook.onIncomplete=block). Use")} ${theme.paint("accent", "git commit --no-verify")} ${theme.paint("muted", "to override.")}\n`
+    };
+  }
   return {
     exitCode: 0,
     stdout: "",
