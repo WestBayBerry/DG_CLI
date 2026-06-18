@@ -120,8 +120,18 @@ const PIP_VALUE_FLAGS = new Set([
   "--extra-index-url", "-f", "--find-links", "-t", "--target", "--platform",
   "--python-version", "--implementation", "--abi", "--prefix", "--root", "--no-binary",
   "--only-binary", "--progress-bar",
+  // Global value-flags that can precede the `install` subcommand; without them
+  // the flag's value is mistaken for the verb and the real package is missed.
+  "--log", "--cache-dir", "--proxy", "--timeout", "--retries", "--cert", "--client-cert",
+  "--trusted-host", "--log-file", "--python",
 ]);
-const NPM_VALUE_FLAGS = new Set(["--registry", "--prefix", "-C", "--workspace", "-w", "--tag", "--otp"]);
+const NPM_VALUE_FLAGS = new Set([
+  "--registry", "--prefix", "-C", "--workspace", "-w", "--tag", "--otp",
+  // Global value-flags that can precede the subcommand.
+  "--loglevel", "--cache", "--userconfig", "--globalconfig", "--node-options", "--script-shell",
+  "--before", "--omit", "--include", "--https-proxy", "--proxy", "--cafile", "--cert", "--key",
+  "--user-agent", "--fetch-timeout", "--fetch-retries", "--maxsockets", "--network-timeout",
+]);
 
 function analyzeEcosystem(eco: Ecosystem): AnalyzeEcosystem | null {
   if (eco === "javascript") return "npm";
@@ -130,15 +140,124 @@ function analyzeEcosystem(eco: Ecosystem): AnalyzeEcosystem | null {
 }
 
 function splitSegments(line: string): string[] {
-  // Split on shell control operators, but not on a `&` that is part of a
-  // redirection (`2>&1`, `>&2`, `&>file`) where the `&` is glued to a `>` —
-  // shearing there turns a redirection into a phantom package token.
-  return line.split(/&&|\|\||;|\||[\n\r]|(?<!>)&(?!>)/).map((s) => s.trim()).filter(Boolean);
+  // Split on shell control operators (`&&`, `||`, `;`, `|`, newline, and a
+  // backgrounding `&`), but only OUTSIDE single/double quotes and backslash
+  // escapes — the shell treats a quoted `;`/`&&`/`|` as literal data, so a
+  // separator inside a curl header, a search query, or a JSON body must not
+  // shear the argument into a phantom command segment (a quoted `npm install`
+  // would otherwise be screened as a real install). A `$(…)`/backtick command
+  // substitution inside quotes is still reached: collectSegments extracts its
+  // body separately. A bare `&` glued to a `>` (`2>&1`, `&>file`) is part of a
+  // redirection, not a separator.
+  const segments: string[] = [];
+  let buf = "";
+  let quote: "'" | '"' | null = null;
+  let ansiC = false;
+  const push = (): void => {
+    const t = buf.trim();
+    if (t) {
+      segments.push(t);
+    }
+    buf = "";
+  };
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i] ?? "";
+    if (ansiC) {
+      // ANSI-C `$'…'`: a backslash escapes the next char, so `\'` does NOT close
+      // the span — track it the way lexSegment/decodeAnsiC and bash do, or the
+      // quote state desyncs and a real `;`/`&&` after it is mis-split.
+      if (ch === "\\" && i + 1 < line.length) {
+        buf += ch + line[i + 1];
+        i += 1;
+        continue;
+      }
+      buf += ch;
+      if (ch === "'") {
+        ansiC = false;
+      }
+      continue;
+    }
+    if (quote === "'") {
+      buf += ch;
+      if (ch === "'") {
+        quote = null;
+      }
+      continue;
+    }
+    if (quote === '"') {
+      if (ch === "\\" && i + 1 < line.length) {
+        buf += ch + line[i + 1];
+        i += 1;
+        continue;
+      }
+      buf += ch;
+      if (ch === '"') {
+        quote = null;
+      }
+      continue;
+    }
+    if (ch === "$" && line[i + 1] === "'") {
+      ansiC = true;
+      buf += "$'";
+      i += 1;
+      continue;
+    }
+    if (ch === "\\" && i + 1 < line.length) {
+      buf += ch + line[i + 1];
+      i += 1;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      buf += ch;
+      continue;
+    }
+    if (ch === "#" && (i === 0 || /\s/.test(line[i - 1] ?? ""))) {
+      // A bash comment begins at an unquoted `#` on a word boundary and runs to
+      // end of line; the shell never executes that text, so splitting it into a
+      // phantom install segment would be a false block.
+      push();
+      while (i < line.length && line[i] !== "\n" && line[i] !== "\r") {
+        i += 1;
+      }
+      i -= 1;
+      continue;
+    }
+    if (ch === "\n" || ch === "\r" || ch === ";") {
+      push();
+      continue;
+    }
+    if (ch === "|") {
+      push();
+      if (line[i + 1] === "|") {
+        i += 1;
+      }
+      continue;
+    }
+    if (ch === "&") {
+      if (line[i + 1] === "&") {
+        push();
+        i += 1;
+        continue;
+      }
+      if (line[i - 1] === ">" || line[i + 1] === ">") {
+        buf += ch;
+        continue;
+      }
+      push();
+      continue;
+    }
+    buf += ch;
+  }
+  push();
+  return segments;
 }
 
 function substitutionBodies(line: string): string[] {
   const bodies: string[] = [];
-  const patterns = [/\$\(([^)]*)\)/g, /`([^`]*)`/g];
+  // `$(…)`, backtick, and process substitution `<(…)` / `>(…)` all run their
+  // body as a command, so an install hidden inside one must be re-screened.
+  const patterns = [/\$\(([^)]*)\)/g, /`([^`]*)`/g, /<\(([^)]*)\)/g, />\(([^)]*)\)/g];
   for (const pattern of patterns) {
     let m: RegExpExecArray | null;
     while ((m = pattern.exec(line)) !== null) {
@@ -407,6 +526,14 @@ const WRAPPERS: ReadonlyMap<string, WrapperSpec> = new Map([
 
 const SHELL_EXEC = new Set(["sh", "bash", "zsh", "dash", "ash"]);
 
+// Control-flow keywords that introduce a command (`if …; then <cmd>`, `for …;
+// do <cmd>`, `! <cmd>`). The segmenter splits on `;`, so the command after one
+// lands at the head of its segment behind the keyword — strip it or a real
+// `do npm install <pkg>` is read as the no-op command `do`.
+const SHELL_KEYWORDS = new Set(["then", "do", "else", "elif", "!"]);
+// A `case … in <pat>) <cmd> ;;` arm label, e.g. `a)`, `*)`, `*.js)`, `a|b)`.
+const CASE_LABEL = /^[A-Za-z0-9_*?.\][|@!+-]+\)$/;
+
 // Package managers dg doesn't statically screen (no shim, no classifier). A
 // recognized install verb for one of these can't be screened by the hook, so it
 // defers to the runtime gate rather than waving it through silently.
@@ -462,6 +589,22 @@ function commandTokens(segment: string): CommandTokens {
   for (;;) {
     while (tokens.length > 0 && ENV_ASSIGNMENT.test(tokens[0] ?? "")) {
       tokens = tokens.slice(1);
+    }
+    const kw = tokens[0] ?? "";
+    if (SHELL_KEYWORDS.has(kw)) {
+      tokens = tokens.slice(1);
+      continue;
+    }
+    if (kw === "case") {
+      const close = tokens.findIndex((t) => t.endsWith(")"));
+      if (close > 0) {
+        tokens = tokens.slice(close + 1);
+        continue;
+      }
+    }
+    if (CASE_LABEL.test(kw)) {
+      tokens = tokens.slice(1);
+      continue;
     }
     const head = commandBasename(tokens[0] ?? "");
     if (head === "eval" && tokens.length > 1) {

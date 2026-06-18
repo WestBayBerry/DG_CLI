@@ -24,8 +24,45 @@ const yarnProtected = new Set(["add", "install", "upgrade", "dlx", "create"]);
 const pipProtected = new Set(["install", "download", "wheel"]);
 const pipxProtected = new Set(["install", "upgrade", "inject", "run"]);
 const uvProtected = new Set(["add", "sync"]);
-const cargoProtected = new Set(["add", "install", "fetch", "update", "build", "test", "check", "run"]);
+// Only the dependency-set-changing verbs. `build`/`test`/`run`/`check` compile
+// local code (the npm `run`/`build` analog, which is passthrough) and crates are
+// not analyzable yet, so gating them just interrupts every Rust build with no
+// screening value.
+const cargoProtected = new Set(["add", "install", "fetch", "update"]);
 const passthrough = new Set(["help", "--help", "-h", "version", "--version", "-v", "list", "ls", "show", "freeze"]);
+
+// Recognized read-only / local / script subcommands across the managers. Used
+// only to locate the real subcommand when a global value-flag puts a non-verb
+// token first (`npm --prefix /tmp install x` → action `/tmp`, missing the
+// install). A flag value (a path, URL, or log level) is never a recognized
+// verb, so the scan steps over it; a script-runner verb (`run`, `view`) is
+// matched before any later install-looking token, so `npm run install` is not
+// mis-screened. Must contain no install verb (those live in the protected sets).
+const READ_ONLY_VERBS = new Set([
+  "run", "run-script", "start", "stop", "restart", "test", "build", "watch", "serve", "lint", "format",
+  "ls", "list", "ll", "la", "view", "show", "info", "outdated", "why", "fund", "audit", "doctor", "ping",
+  "config", "get", "cache", "whoami", "org", "team", "access", "token", "profile", "search", "dist-tag",
+  "docs", "repo", "home", "bin", "root", "prefix", "completion", "help", "version", "explain", "star", "unstar",
+  "deprecate", "sbom", "query", "explore", "pack", "publish", "link", "unlink", "prune", "rebuild",
+  "logout", "login", "adduser", "owner", "set", "init", "licenses",
+  "freeze", "check", "uninstall", "debug", "hash", "inspect", "index", "tree", "lock", "venv", "export", "python", "self",
+]);
+
+function findAction(args: readonly string[], protectedCommands: ReadonlySet<string>): string {
+  let firstPositional: string | undefined;
+  for (const arg of args) {
+    if (arg.startsWith("-")) {
+      continue;
+    }
+    if (firstPositional === undefined) {
+      firstPositional = arg;
+    }
+    if (protectedCommands.has(arg) || READ_ONLY_VERBS.has(arg)) {
+      return arg;
+    }
+  }
+  return firstPositional ?? "";
+}
 
 // pip3, pip3.12, python3, python3.11 are the canonical install commands on
 // macOS/Homebrew and many Linux distros (see BINARY_FALLBACKS in
@@ -92,8 +129,8 @@ function classifyByCommand(
   protectedReason: string,
   ecosystem: Ecosystem
 ): PackageManagerClassification {
-  const action = firstCommand(args);
-  if (protectedCommands.has(action) || containsFetchSpec(args) || initFetchesPackage(action, args, protectedCommands)) {
+  const action = findAction(args, protectedCommands);
+  if (protectedCommands.has(action) || initFetchesPackage(action, args, protectedCommands)) {
     return {
       manager,
       ecosystem,
@@ -128,7 +165,7 @@ function classifyUv(args: readonly string[]): PackageManagerClassification {
     // fetch-and-execute path that the bare `run` verb otherwise waves through.
     return protectedClassification("uv", args, "uv", "uv run --with fetches and runs a package");
   }
-  if (uvProtected.has(action) || containsFetchSpec(args)) {
+  if (uvProtected.has(action)) {
     return protectedClassification("uv", args, "uv", "uv install/fetch command");
   }
   return {
@@ -191,8 +228,4 @@ export function uvRunFetchesPackage(args: readonly string[]): boolean {
   return args.some(
     (a) => a === "--with" || a === "--with-editable" || a === "--with-requirements" || a.startsWith("--with="),
   );
-}
-
-function containsFetchSpec(args: readonly string[]): boolean {
-  return args.some((arg) => /^https?:\/\//.test(arg) || /^git\+https?:\/\//.test(arg) || /\.t(ar\.)?gz(?:$|[#?])/.test(arg));
 }
