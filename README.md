@@ -10,6 +10,16 @@ install is blocked before its install scripts execute, not flagged afterward.
 It scans published package artifacts from the registry; your source code stays
 on your machine.
 
+## Who builds this
+
+Dependency Guardian is built by Mckeane McBrearty at WestBayBerry. The CLI is
+open source under Apache-2.0, and you can read every line at
+https://github.com/WestBayBerry/DG_CLI. Releases publish from GitHub Actions
+through npm's Trusted Publisher OIDC, never from a personal machine. The scanner
+found a 37-package React Native campaign published by the npm account `sproger`
+that had gone unreported for over a year; those findings are now in the OpenSSF
+malicious-packages database (OSSF PR #1322).
+
 ## Install
 
 ```bash

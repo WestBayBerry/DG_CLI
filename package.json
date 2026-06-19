@@ -1,7 +1,8 @@
 {
   "name": "@westbayberry/dg",
-  "version": "2.3.2",
+  "version": "2.3.3",
   "description": "Dependency Guardian supply-chain firewall CLI",
+  "author": "Mckeane McBrearty <mckeane@westbayberry.com> (https://westbayberry.com)",
   "keywords": [
     "supply-chain-security",
     "supply-chain",
